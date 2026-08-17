@@ -1,0 +1,15 @@
+{
+  "title": "成都理工大学校史馆",
+  "themeTitle": "极地科考",
+  "apiHost": "0.0.0.0",
+  "apiPort": 8000,
+  "kiosk": true,
+  "carouselDwellSeconds": 12,
+  "mascots": {
+    "main": "content/mascots/mascot-main.png",
+    "moving": "content/mascots/mascot-moving.png",
+    "playing": "content/mascots/mascot-playing.png",
+    "guide": "content/mascots/mascot-guide.png",
+    "error": "content/mascots/mascot-guide.png"
+  }
+}

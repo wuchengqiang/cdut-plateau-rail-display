@@ -1,0 +1,10 @@
+{
+  "schemaVersion": "1.0",
+  "homeScene": 1,
+  "scenes": [
+    { "id": 1, "name": "科考启程", "navLabel": "启程", "subtitle": "从成都出发，向极地进发", "videoPath": "content/videos/scene-1.mp4", "posterPath": "content/posters/scene-1.svg", "backgroundPath": "content/backgrounds/scene-1-polar-station.png", "motorPosition": "P1", "enabled": true },
+    { "id": 2, "name": "冰川探索", "navLabel": "冰川", "subtitle": "穿越冰原，记录地球的年轮", "videoPath": "content/videos/scene-2.mp4", "posterPath": "content/posters/scene-2.svg", "backgroundPath": "content/backgrounds/scene-2-glacier-route.png", "motorPosition": "P2", "enabled": true },
+    { "id": 3, "name": "科学观测", "navLabel": "观测", "subtitle": "以严谨丈量极地的脉搏", "videoPath": "content/videos/scene-3.mp4", "posterPath": "content/posters/scene-3.svg", "backgroundPath": "content/backgrounds/scene-3-observation-station.png", "motorPosition": "P3", "enabled": true },
+    { "id": 4, "name": "科考精神", "navLabel": "精神", "subtitle": "把探索写进时代的坐标", "videoPath": "content/videos/scene-4.mp4", "posterPath": "content/posters/scene-4.svg", "backgroundPath": "content/backgrounds/scene-4-expedition-spirit.png", "motorPosition": "P4", "enabled": true }
+  ]
+}

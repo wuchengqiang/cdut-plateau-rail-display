@@ -1,0 +1,185 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from .config import ROOT, load_configuration
+from .services import CarouselService, MediaService, MotorProtocolError, MotorProvider, SceneService, SystemState, create_motor_provider
+
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger("polar_rail")
+
+
+class DisplayRuntime:
+    def __init__(self) -> None:
+        self.clients: set[WebSocket] = set()
+        self.app_config, self.scenes, self.machine = load_configuration()
+        self.state = SystemState(current_scene=self._home_scene())
+        self.motor: MotorProvider = create_motor_provider(self.state, self.machine, self.publish)
+        self.media = MediaService(self.state, self.publish)
+        self.scene = SceneService(self.state, self.scenes, self.motor, self.media, self.publish)
+        self.carousel = CarouselService(self.state, self.scene, self.app_config, self.publish)
+
+    def _home_scene(self) -> int | None:
+        return next((scene_id for scene_id, scene in self.scenes.items() if scene["motorPosition"] == self.machine["homePosition"]), None)
+
+    async def publish(self, payload: dict[str, Any]) -> None:
+        message = {"type": "status", "data": payload}
+        stale: list[WebSocket] = []
+        for client in self.clients:
+            try:
+                await client.send_json(message)
+            except Exception:
+                stale.append(client)
+        for client in stale:
+            self.clients.discard(client)
+
+    async def reload_content(self) -> dict[str, Any]:
+        self.app_config, self.scenes, self.machine = load_configuration()
+        return {"success": True, "message": "Content configuration reloaded"}
+
+
+runtime = DisplayRuntime()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    await runtime.motor.initialize()
+    yield
+    await runtime.carousel.stop()
+    await runtime.motor.dispose()
+
+
+app = FastAPI(title="Polar Rail Display", lifespan=lifespan)
+app.mount("/content", StaticFiles(directory=ROOT / "content"), name="content")
+
+
+def command(request: Request) -> dict[str, str]:
+    return {"method": request.method, "path": request.url.path}
+
+
+async def manual_scene(scene_id: int, request: Request) -> dict[str, Any]:
+    await runtime.carousel.stop()
+    return await runtime.scene.activate_scene(scene_id, command(request))
+
+
+@app.api_route("/api/control/scene/{scene_id}", methods=["GET", "POST"])
+async def scene(scene_id: int, request: Request) -> dict[str, Any]:
+    return await manual_scene(scene_id, request)
+
+
+@app.get("/api/status")
+async def status() -> dict[str, Any]:
+    return runtime.state.payload()
+
+
+@app.get("/api/display-config")
+async def display_config() -> dict[str, Any]:
+    """Expose external display assets so the frontend never binds mascot filenames."""
+    def asset_url(path: str) -> str:
+        return "/" + path.replace("\\", "/").lstrip("/")
+
+    return {
+        "title": runtime.app_config["title"],
+        "themeTitle": runtime.app_config["themeTitle"],
+        "mascots": {key: asset_url(path) for key, path in runtime.app_config["mascots"].items()},
+        "scenes": [
+            {
+                **scene,
+                "videoPath": asset_url(scene["videoPath"]),
+                "posterPath": asset_url(scene["posterPath"]),
+                "backgroundPath": asset_url(scene["backgroundPath"]),
+            }
+            for scene in runtime.scenes.values()
+        ],
+    }
+
+
+@app.api_route("/api/control/play", methods=["GET", "POST"])
+async def play(request: Request) -> dict[str, Any]:
+    runtime.state.last_command = command(request)
+    await runtime.media.play()
+    return {"success": True, "message": "Playback started"}
+
+
+@app.api_route("/api/control/pause", methods=["GET", "POST"])
+async def pause(request: Request) -> dict[str, Any]:
+    runtime.state.last_command = command(request)
+    await runtime.media.pause()
+    return {"success": True, "message": "Playback paused"}
+
+
+@app.api_route("/api/control/stop", methods=["GET", "POST"])
+async def stop(request: Request) -> dict[str, Any]:
+    runtime.state.last_command = command(request)
+    await runtime.media.stop()
+    return {"success": True, "message": "Playback stopped"}
+
+
+@app.api_route("/api/control/home", methods=["GET", "POST"])
+async def home(request: Request) -> dict[str, Any]:
+    await runtime.carousel.stop()
+    return await runtime.scene.go_home(command(request))
+
+
+@app.api_route("/api/control/carousel/start", methods=["GET", "POST"])
+async def carousel_start(request: Request) -> dict[str, Any]:
+    return await runtime.carousel.start(command(request))
+
+
+@app.api_route("/api/control/carousel/stop", methods=["GET", "POST"])
+async def carousel_stop(request: Request) -> dict[str, Any]:
+    return await runtime.carousel.stop(command(request))
+
+
+@app.post("/api/admin/reload")
+async def reload_content() -> dict[str, Any]:
+    return await runtime.reload_content()
+
+
+@app.post("/api/admin/hardware/ping")
+async def hardware_ping() -> dict[str, Any]:
+    """Development-only connectivity check; no movement command is issued."""
+    try:
+        reply = await runtime.motor.ping()
+        return {"success": True, "provider": runtime.machine.get("provider", "mock"), "reply": reply}
+    except MotorProtocolError as error:
+        return {"success": False, "error": "MOTOR_PROTOCOL_ERROR", "message": str(error)}
+
+
+@app.get("/api/admin/hardware/status")
+async def hardware_status() -> dict[str, Any]:
+    try:
+        state = await runtime.motor.get_state()
+        return {"success": True, "motorState": state, "provider": runtime.machine.get("provider", "mock")}
+    except MotorProtocolError as error:
+        return {"success": False, "error": "MOTOR_PROTOCOL_ERROR", "message": str(error)}
+
+
+@app.websocket("/ws")
+async def websocket_status(websocket: WebSocket) -> None:
+    await websocket.accept()
+    runtime.clients.add(websocket)
+    await websocket.send_json({"type": "status", "data": runtime.state.payload()})
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        runtime.clients.discard(websocket)
+
+
+@app.get("/{path:path}")
+async def display(path: str) -> FileResponse:
+    static = ROOT / "backend" / "static"
+    target = static / path
+    if path and target.is_file():
+        return FileResponse(target)
+    return FileResponse(static / "index.html")

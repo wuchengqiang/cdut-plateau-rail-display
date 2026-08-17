@@ -1,0 +1,21 @@
+{
+  "provider": "mock",
+  "homePosition": "P1",
+  "mockMoveDurationMs": 1800,
+  "arriveTimeoutMs": 10000,
+  "positionsMm": {
+    "P1": null,
+    "P2": null,
+    "P3": null,
+    "P4": null
+  },
+  "network": {
+    "host": "",
+    "port": 8080,
+    "sharedKey": "",
+    "connectTimeoutMs": 5000,
+    "commandTimeoutMs": 5000,
+    "moveTimeoutMs": 60000,
+    "watchIntervalMs": 100
+  }
+}

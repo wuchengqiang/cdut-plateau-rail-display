@@ -1,0 +1,21 @@
+# Frontend and Python build output
+frontend/node_modules/
+frontend/*.tsbuildinfo
+backend/static/
+build/
+dist/
+
+# Local runtime data
+logs/
+tmp/
+__pycache__/
+*.py[cod]
+
+# Local editor and OS metadata
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Image-generation intermediates; only final transparent assets are versioned.
+content/mascots/*-source.png
