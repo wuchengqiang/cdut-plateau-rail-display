@@ -29,7 +29,7 @@ const label: Record<string, string> = { idle: '待命', moving: '滑轨移动中
 
 function App() {
   const [status, setStatus] = useState<Status>(defaultStatus);
-  const [admin, setAdmin] = useState(false);
+  const [admin, setAdmin] = useState(() => new URLSearchParams(window.location.search).get('admin') === '1');
   const [displayConfig, setDisplayConfig] = useState<DisplayConfig>(fallbackConfig);
   const videoRef = useRef<HTMLVideoElement>(null);
   const activeId = status.targetScene ?? status.currentScene ?? 1;
