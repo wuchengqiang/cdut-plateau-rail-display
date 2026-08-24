@@ -8,6 +8,7 @@ dist/
 # Local runtime data
 logs/
 tmp/
+config/admin.json
 __pycache__/
 *.py[cod]
 

@@ -9,24 +9,24 @@ async def _publish(_: dict) -> None:
 
 async def _exercise_services() -> None:
     scenes = {
-        1: {"id": 1, "motorPosition": "P1"},
-        2: {"id": 2, "motorPosition": "P2"},
-        3: {"id": 3, "motorPosition": "P3"},
-        4: {"id": 4, "motorPosition": "P4"},
+        "p01": {"id": "p01", "order": 10, "motorPosition": "p01"},
+        "p02": {"id": "p02", "order": 20, "motorPosition": "p02"},
+        "p03": {"id": "p03", "order": 30, "motorPosition": "p03"},
+        "p04": {"id": "p04", "order": 40, "motorPosition": "p04"},
     }
-    state = SystemState(current_scene=1)
-    motor = MockMotorProvider(state, {"homePosition": "P1", "mockMoveDurationMs": 0}, _publish)
+    state = SystemState(current_scene="p01")
+    motor = MockMotorProvider(state, {"homePosition": "p01", "mockMoveDurationMs": 0}, _publish)
     media = MediaService(state, _publish)
     service = SceneService(state, scenes, motor, media, _publish)
     carousel = CarouselService(state, service, {"carouselDwellSeconds": 0}, _publish)
     await motor.initialize()
 
-    accepted = await service.activate_scene(3, {"method": "POST", "path": "/api/control/scene/3"})
-    duplicate = await service.activate_scene(3, {"method": "GET", "path": "/api/control/scene/3"})
+    accepted = await service.activate_scene("p03", {"method": "POST", "path": "/api/control/points/p03/activate"})
+    duplicate = await service.activate_scene("p03", {"method": "GET", "path": "/api/control/points/p03/activate"})
     assert accepted["accepted"] is True and duplicate["accepted"] is False
     await asyncio.sleep(0.05)
-    assert state.current_scene == 3 and state.playback_state == "playing"
-    assert (await service.activate_scene(9, {"method": "GET", "path": "/api/control/scene/9"}))["error"] == "INVALID_SCENE"
+    assert state.current_scene == "p03" and state.playback_state == "playing"
+    assert (await service.activate_scene("p09", {"method": "GET", "path": "/api/control/points/p09/activate"}))["error"] == "INVALID_SCENE"
 
     assert (await carousel.start({"method": "POST", "path": "/api/control/carousel/start"}))["accepted"] is True
     await asyncio.sleep(0.05)

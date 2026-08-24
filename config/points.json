@@ -1,0 +1,59 @@
+{
+  "schemaVersion": "2.0",
+  "homePointId": "p01",
+  "tourMode": "pingPong",
+  "points": [
+    {
+      "id": "p01",
+      "order": 10,
+      "title": "高原启程",
+      "navLabel": "启程",
+      "subtitle": "从成都出发，走进青藏高原的科学现场",
+      "videoPath": "content/videos/p01.mp4",
+      "posterPath": "content/posters/p01.svg",
+      "backgroundPath": "content/backgrounds/p01-plateau-base.png",
+      "mascotKey": "main",
+      "positionMm": 0,
+      "enabled": true
+    },
+    {
+      "id": "p02",
+      "order": 20,
+      "title": "地质巡测",
+      "navLabel": "巡测",
+      "subtitle": "循着岩层与断裂带，解读高原的地质密码",
+      "videoPath": "content/videos/p02.mp4",
+      "posterPath": "content/posters/p02.svg",
+      "backgroundPath": "content/backgrounds/p02-geology-route.png",
+      "mascotKey": "moving",
+      "positionMm": 1200,
+      "enabled": true
+    },
+    {
+      "id": "p03",
+      "order": 30,
+      "title": "冰川源区",
+      "navLabel": "冰川",
+      "subtitle": "追踪冰川变化，守护江河源头生态",
+      "videoPath": "content/videos/p03.mp4",
+      "posterPath": "content/posters/p03.svg",
+      "backgroundPath": "content/backgrounds/p03-glacier-source.png",
+      "mascotKey": "playing",
+      "positionMm": 2400,
+      "enabled": true
+    },
+    {
+      "id": "p04",
+      "order": 40,
+      "title": "高原守望",
+      "navLabel": "守望",
+      "subtitle": "以科学之志，守望世界屋脊",
+      "videoPath": "content/videos/p04.mp4",
+      "posterPath": "content/posters/p04.svg",
+      "backgroundPath": "content/backgrounds/p04-plateau-spirit.png",
+      "mascotKey": "guide",
+      "positionMm": 3600,
+      "enabled": true
+    }
+  ]
+}

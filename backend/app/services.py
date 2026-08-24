@@ -30,8 +30,8 @@ class MotorProtocolError(RuntimeError):
 
 @dataclass
 class SystemState:
-    current_scene: int | None = None
-    target_scene: int | None = None
+    current_scene: str | None = None
+    target_scene: str | None = None
     motor_state: str = "idle"
     playback_state: str = "idle"
     carousel_mode: bool = False
@@ -44,6 +44,8 @@ class SystemState:
         return {
             "currentScene": self.current_scene,
             "targetScene": self.target_scene,
+            "currentPointId": self.current_scene,
+            "targetPointId": self.target_scene,
             "motorState": self.motor_state,
             "playbackState": self.playback_state,
             "carouselMode": self.carousel_mode,
@@ -316,7 +318,7 @@ class MediaService:
     def __init__(self, state: SystemState, publish: Publish) -> None:
         self.state, self.publish = state, publish
 
-    async def load(self, scene_id: int) -> None:
+    async def load(self, scene_id: str) -> None:
         self.state.playback_state = "loading"
         self.state.video_id = f"scene-{scene_id}-video"
         await self.publish(self.state.payload())
@@ -336,12 +338,12 @@ class MediaService:
 
 
 class SceneService:
-    def __init__(self, state: SystemState, scenes: dict[int, dict[str, Any]], motor: MotorProvider, media: MediaService, publish: Publish) -> None:
+    def __init__(self, state: SystemState, scenes: dict[str, dict[str, Any]], motor: MotorProvider, media: MediaService, publish: Publish) -> None:
         self.state, self.scenes, self.motor, self.media, self.publish = state, scenes, motor, media, publish
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
 
-    async def activate_scene(self, scene_id: int, command: dict[str, str]) -> dict[str, Any]:
+    async def activate_scene(self, scene_id: str, command: dict[str, str]) -> dict[str, Any]:
         if scene_id not in self.scenes:
             return {"success": False, "error": "INVALID_SCENE", "scene": scene_id}
         async with self._lock:
@@ -356,7 +358,7 @@ class SceneService:
             await self.publish(self.state.payload())
         return {"success": True, "accepted": True, "scene": scene_id, "message": f"Scene {scene_id} accepted"}
 
-    async def _run_scene(self, scene_id: int) -> None:
+    async def _run_scene(self, scene_id: str) -> None:
         try:
             await self.media.stop()
             moved = await self.motor.move_to(self.scenes[scene_id]["motorPosition"])
@@ -425,15 +427,25 @@ class CarouselService:
         await self.publish(self.state.payload())
         return {"success": True, "accepted": True, "message": "Carousel stopped"}
 
-    def _next_scene(self) -> int:
-        current = self.state.current_scene or 1
+    def _ordered_scene_ids(self) -> list[str]:
+        return [scene_id for scene_id, _ in sorted(self.scene_service.scenes.items(), key=lambda item: (item[1].get("order", 0), item[0]))]
+
+    def _next_scene(self) -> str:
+        scene_ids = self._ordered_scene_ids()
+        if len(scene_ids) == 1:
+            return scene_ids[0]
+        current = self.state.current_scene if self.state.current_scene in scene_ids else scene_ids[0]
+        index = scene_ids.index(current)
+        if self.app_config.get("tourMode") == "loop":
+            self.state.carousel_direction = "forward"
+            return scene_ids[(index + 1) % len(scene_ids)]
         direction = self.state.carousel_direction
-        if current == 4:
+        if index >= len(scene_ids) - 1:
             direction = "backward"
-        elif current == 1:
+        elif index <= 0:
             direction = "forward"
         self.state.carousel_direction = direction
-        return current + (1 if direction == "forward" else -1)
+        return scene_ids[index + (1 if direction == "forward" else -1)]
 
     async def _run(self) -> None:
         try:
