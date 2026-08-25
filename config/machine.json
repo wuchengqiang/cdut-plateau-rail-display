@@ -1,14 +1,9 @@
 {
   "provider": "mock",
-  "homePosition": "P1",
+  "homePosition": "p01",
   "mockMoveDurationMs": 1800,
   "arriveTimeoutMs": 10000,
-  "positionsMm": {
-    "P1": null,
-    "P2": null,
-    "P3": null,
-    "P4": null
-  },
+  "positionsMm": {},
   "network": {
     "host": "",
     "port": 8080,
