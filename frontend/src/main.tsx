@@ -25,7 +25,7 @@ const fallbackConfig: DisplayConfig = {
   brandEnglish: 'QINGHAI–TIBET PLATEAU SCIENTIFIC EXPEDITION', coordinateLabel: '高海拔综合科学考察', emblemPath: '/content/branding/cdut-emblem.svg',
   points: fallbackPoints,
   mascots: { main: '/content/mascots/mascot-main-original.png', moving: '/content/mascots/mascot-moving-original.png', playing: '/content/mascots/mascot-playing-original.png', guide: '/content/mascots/mascot-guide-original.png', error: '/content/mascots/mascot-guide-original.png' },
-  labels: { play: '播放', pause: '暂停', stop: '停止', autoTour: '自动巡展', stopTour: '停止巡展', home: '回原点', fullScreen: '全屏播放', exitFullScreen: '退出全屏', playCurrent: '播放当前视频', adminEntry: '管理员入口', adminLoginTitle: '管理员验证', adminPassword: '请输入管理密码', adminLogin: '进入面板', adminCancel: '取消', adminPasswordError: '密码不正确，请重试', arriving: '正在前往', arrivedHint: '抵达后将自动播放对应内容', mascotMainTitle: '地质科考伙伴', mascotGuideTitle: '科考导览伙伴', mascotMainText: '地质锤，敲开探索之门', mascotGuideText: '探索，从这里出发' }
+  labels: { play: '播放', pause: '暂停', stop: '停止', autoTour: '自动巡展', stopTour: '停止巡展', home: '回原点', fullScreen: '全屏播放', exitFullScreen: '退出全屏', playCurrent: '播放当前视频', adminEntry: '管理员入口', adminLoginTitle: '管理员验证', adminPassword: '请输入管理密码', adminLogin: '进入面板', adminCancel: '取消', adminPasswordError: '密码不正确，请重试', hardwarePing: '硬件 Ping', hardwarePingSuccess: '控制器响应：', hardwarePingFailed: '控制器未通过 Ping：', arriving: '正在前往', arrivedHint: '抵达后将自动播放对应内容', mascotMainTitle: '地质科考伙伴', mascotGuideTitle: '科考导览伙伴', mascotMainText: '地质锤，敲开探索之门', mascotGuideText: '探索，从这里出发' }
 };
 const defaultStatus: Status = { currentScene: 'p01', targetScene: null, motorState: 'arrived', playbackState: 'idle', carouselMode: false, carouselDirection: 'forward', videoId: null, error: null };
 const stateLabel: Record<string, string> = { idle: '待命', moving: '滑轨移动中', arrived: '已到位', loading: '内容装载中', playing: '正在播放', paused: '已暂停', stopped: '已停止', error: '需要关注' };
@@ -36,6 +36,7 @@ function App() {
   const [adminLoginOpen, setAdminLoginOpen] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
   const [adminLoginError, setAdminLoginError] = useState('');
+  const [hardwareMessage, setHardwareMessage] = useState('');
   const [displayConfig, setDisplayConfig] = useState<DisplayConfig>(fallbackConfig);
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<HTMLDivElement>(null);
@@ -92,9 +93,19 @@ function App() {
     setAdminLoginError('');
     const response = await fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: adminPassword }) });
     if (!response.ok) { setAdminLoginError(labels.adminPasswordError); return; }
+    await fetch('/api/admin/reload', { method: 'POST' });
     setAdminPassword('');
     setAdminLoginOpen(false);
     setAdmin(true);
+  };
+  const hardwarePing = async () => {
+    try {
+      const response = await fetch('/api/admin/hardware/ping', { method: 'POST' });
+      const result = await response.json() as { success: boolean; reply?: string; message?: string };
+      setHardwareMessage(result.success ? `${labels.hardwarePingSuccess}${result.reply ?? 'PONG'}` : `${labels.hardwarePingFailed}${result.message ?? '未知错误'}`);
+    } catch {
+      setHardwareMessage(`${labels.hardwarePingFailed}网络请求失败`);
+    }
   };
 
   return <main className="exhibit-shell" style={{ backgroundImage: `url("${activePoint.backgroundPath}")` }}>
@@ -123,7 +134,7 @@ function App() {
     <nav className="station-nav" aria-label="可配置点位">{displayConfig.points.map((point, index) => <button className={point.id === activeId ? 'active' : ''} key={point.id} onClick={() => void activate(point.id)}><em>{String(index + 1).padStart(2, '0')}</em><span>{point.navLabel}</span></button>)}</nav>
     <footer><span>{displayConfig.brandEnglish}</span><div className="track">{displayConfig.points.map((point) => <i key={point.id} className={point.id === activeId ? 'active' : ''} />)}</div><span>{status.carouselMode ? 'PING-PONG AUTO TOUR' : 'PLATEAU RAIL DISPLAY SYSTEM'}</span></footer>
     {adminLoginOpen && <div className="admin-login-backdrop"><form className="admin-login" onSubmit={loginAdmin}><h2>{labels.adminLoginTitle}</h2><label>{labels.adminPassword}<input autoFocus type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required /></label>{adminLoginError && <p role="alert">{adminLoginError}</p>}<div><button type="button" onClick={() => setAdminLoginOpen(false)}>{labels.adminCancel}</button><button type="submit">{labels.adminLogin}</button></div></form></div>}
-    {admin && <section className="admin-panel"><button className="close" onClick={() => setAdmin(false)}>×</button><span>管理员调试面板</span><div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　影片：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '往返轮播' : '手动控制'}</div><div>{displayConfig.points.map((point) => <button key={point.id} onClick={() => void activate(point.id)}>{point.id} · {point.title}</button>)}</div><div><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button onClick={() => void command('home')}>{labels.home}</button></div><div><button onClick={() => void command('carousel/start')}>启动轮播</button><button onClick={() => void command('carousel/stop')}>停止轮播</button></div></section>}
+    {admin && <section className="admin-panel"><button className="close" onClick={() => setAdmin(false)}>×</button><span>管理员调试面板</span><div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　影片：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '往返轮播' : '手动控制'}</div><div>{displayConfig.points.map((point) => <button key={point.id} onClick={() => void activate(point.id)}>{point.id} · {point.title}</button>)}</div><div><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button onClick={() => void command('home')}>{labels.home}</button></div><div><button onClick={() => void command('carousel/start')}>启动轮播</button><button onClick={() => void command('carousel/stop')}>停止轮播</button><button onClick={() => void hardwarePing()}>{labels.hardwarePing}</button></div>{hardwareMessage && <small className="hardware-message">{hardwareMessage}</small>}</section>}
   </main>;
 }
 

@@ -13,7 +13,7 @@
       "posterPath": "content/posters/p01.svg",
       "backgroundPath": "content/backgrounds/p01-plateau-base.png",
       "mascotKey": "main",
-      "positionMm": 0,
+      "positionMm": null,
       "enabled": true
     },
     {
@@ -26,7 +26,7 @@
       "posterPath": "content/posters/p02.svg",
       "backgroundPath": "content/backgrounds/p02-geology-route.png",
       "mascotKey": "moving",
-      "positionMm": 1200,
+      "positionMm": null,
       "enabled": true
     },
     {
@@ -39,7 +39,7 @@
       "posterPath": "content/posters/p03.svg",
       "backgroundPath": "content/backgrounds/p03-glacier-source.png",
       "mascotKey": "playing",
-      "positionMm": 2400,
+      "positionMm": null,
       "enabled": true
     },
     {
@@ -52,7 +52,7 @@
       "posterPath": "content/posters/p04.svg",
       "backgroundPath": "content/backgrounds/p04-plateau-spirit.png",
       "mascotKey": "guide",
-      "positionMm": 3600,
+      "positionMm": null,
       "enabled": true
     }
   ]

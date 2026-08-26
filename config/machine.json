@@ -5,7 +5,7 @@
   "arriveTimeoutMs": 10000,
   "positionsMm": {},
   "network": {
-    "host": "",
+    "host": "192.168.1.104",
     "port": 8080,
     "sharedKey": "",
     "connectTimeoutMs": 5000,

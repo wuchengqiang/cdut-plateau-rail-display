@@ -34,13 +34,14 @@ def load_configuration() -> tuple[dict[str, Any], dict[str, dict[str, Any]], dic
         raise ValueError("点位 id 不能重复")
 
     configured: dict[str, dict[str, Any]] = {}
-    positions: dict[str, float] = {}
+    positions: dict[str, float | None] = {}
     for point in points:
         point_id = str(point["id"])
         if "positionMm" not in point:
             raise ValueError(f"点位 {point_id} 缺少 positionMm")
         configured[point_id] = {**point, "id": point_id, "motorPosition": point_id}
-        positions[point_id] = float(point["positionMm"])
+        raw_position = point["positionMm"]
+        positions[point_id] = None if raw_position is None else float(raw_position)
 
     home_point_id = str(point_config.get("homePointId", point_ids[0]))
     if home_point_id not in configured:
