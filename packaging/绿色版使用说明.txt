@@ -1,0 +1,14 @@
+青藏高原科考滑轨屏绿色版
+
+启动：双击“启动滑轨屏.bat”或“青藏高原科考滑轨屏.exe”。
+
+外置可修改目录：
+1. config\app.json：主题名称、页头文字、按钮文字、校徽、玩偶。
+2. config\points.json：点位名称、视频、背景、海报、玩偶和 positionMm 坐标。
+3. config\machine.json：控制器 IP、端口与 provider。开发预览保持 mock；完成点位校准后改为 tcp。
+4. config\admin.json：管理员密码。
+5. content\：视频、背景、海报及玩偶等素材。
+
+现场配置完成后，重启程序或管理员登录后自动重载配置。
+未填写 positionMm 的点位不能在真实硬件模式下移动，这是安全保护。
+数字人等外部系统调用本程序电脑的 HTTP API（默认端口 8000），不要直接调用滑轨控制器 IP。

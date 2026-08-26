@@ -4,6 +4,7 @@ frontend/*.tsbuildinfo
 backend/static/
 build/
 dist/
+release/
 
 # Local runtime data
 logs/

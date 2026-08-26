@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import ROOT, load_admin_password, load_configuration
+from .config import ROOT, STATIC_ROOT, load_admin_password, load_configuration
 from .services import CarouselService, MediaService, MotorProtocolError, MotorProvider, SceneService, SystemState, create_motor_provider
 
 
@@ -225,7 +225,7 @@ async def websocket_status(websocket: WebSocket) -> None:
 
 @app.get("/{path:path}")
 async def display(path: str) -> FileResponse:
-    static = ROOT / "backend" / "static"
+    static = STATIC_ROOT
     target = static / path
     if path and target.is_file():
         return FileResponse(target)
