@@ -9,7 +9,7 @@ type Status = {
 };
 type Labels = Record<string, string>;
 type DisplayConfig = {
-  title: string; themeTitle: string; themeSubtitle: string; brandEnglish: string; coordinateLabel: string; emblemPath: string;
+  title: string; themeTitle: string; themeSubtitle: string; brandEnglish: string; coordinatePrimary: string; coordinateSecondary: string; pointPrefix: string; coordinateLabel: string; emblemPath: string;
   labels: Labels; mascots: Record<string, string>; points: Point[];
 };
 
@@ -22,7 +22,7 @@ const fallbackPoints: Point[] = [
 
 const fallbackConfig: DisplayConfig = {
   title: '成都理工大学校史馆', themeTitle: '青藏高原科考', themeSubtitle: '青藏高原地质与生态科考专题展',
-  brandEnglish: 'QINGHAI–TIBET PLATEAU SCIENTIFIC EXPEDITION', coordinateLabel: '高海拔综合科学考察', emblemPath: '/content/branding/cdut-emblem.svg',
+  brandEnglish: 'QINGHAI–TIBET PLATEAU SCIENTIFIC EXPEDITION', coordinatePrimary: 'QINGHAI–TIBET PLATEAU', coordinateSecondary: 'EXPEDITION', pointPrefix: 'POINT', coordinateLabel: '高海拔综合科学考察', emblemPath: '/content/branding/cdut-emblem.svg',
   points: fallbackPoints,
   mascots: { main: '/content/mascots/mascot-main-original.png', moving: '/content/mascots/mascot-moving-original.png', playing: '/content/mascots/mascot-playing-original.png', guide: '/content/mascots/mascot-guide-original.png', error: '/content/mascots/mascot-guide-original.png' },
   labels: { play: '播放', pause: '暂停', stop: '停止', autoTour: '自动巡展', stopTour: '停止巡展', home: '回原点', fullScreen: '全屏播放', exitFullScreen: '退出全屏', playCurrent: '播放当前视频', adminEntry: '管理员入口', adminLoginTitle: '管理员验证', adminPassword: '请输入管理密码', adminLogin: '进入面板', adminCancel: '取消', adminPasswordError: '密码不正确，请重试', hardwarePing: '硬件 Ping', hardwarePingSuccess: '控制器响应：', hardwarePingFailed: '控制器未通过 Ping：', arriving: '正在前往', arrivedHint: '抵达后将自动播放对应内容', mascotMainTitle: '地质科考伙伴', mascotGuideTitle: '科考导览伙伴', mascotMainText: '地质锤，敲开探索之门', mascotGuideText: '探索，从这里出发' }
@@ -112,10 +112,10 @@ function App() {
     <div className="terrain-lines" />
     <header className="masthead">
       <div className="brand"><img className="brand-emblem" src={displayConfig.emblemPath} alt="成都理工大学校徽" /><div><p>{displayConfig.title}</p><h1>{displayConfig.themeTitle} <i>{displayConfig.brandEnglish}</i></h1></div></div>
-      <div className="header-actions"><div className="coordinate"><span>QINGHAI–TIBET PLATEAU</span><b>·</b><span>EXPEDITION</span><small>{displayConfig.coordinateLabel}</small></div><button className="admin-entry" type="button" onClick={() => { setAdminLoginError(''); setAdminLoginOpen(true); }}>{labels.adminEntry}</button></div>
+      <div className="header-actions"><div className="coordinate"><span>{displayConfig.coordinatePrimary}</span><b>·</b><span>{displayConfig.coordinateSecondary}</span><small>{displayConfig.coordinateLabel}</small></div><button className="admin-entry" type="button" onClick={() => { setAdminLoginError(''); setAdminLoginOpen(true); }}>{labels.adminEntry}</button></div>
     </header>
     <section className="presentation">
-      <aside className="scene-intro"><span className="eyebrow">POINT / {pointNumber}</span><h2>{activePoint.title}</h2><p>{activePoint.subtitle}</p><div className="rule" /><small>{displayConfig.themeSubtitle}</small></aside>
+      <aside className="scene-intro"><span className="eyebrow">{displayConfig.pointPrefix} / {pointNumber}</span><h2>{activePoint.title}</h2><p>{activePoint.subtitle}</p><div className="rule" /><small>{displayConfig.themeSubtitle}</small></aside>
       <div className="media-stack">
       <div ref={playerRef} className={`media-frame ${status.motorState === 'moving' ? 'is-moving' : ''}`}>
         <div className="frame-corner top-left" /><div className="frame-corner top-right" /><div className="frame-corner bottom-left" /><div className="frame-corner bottom-right" />
