@@ -1,8 +1,16 @@
 {
   "schemaVersion": "2.0",
-  "homePointId": "p01",
+  "homePointId": "p00",
   "tourMode": "pingPong",
   "points": [
+    {
+      "id": "p00",
+      "order": 0,
+      "title": "机械原点",
+      "visible": false,
+      "positionMm": 0,
+      "enabled": true
+    },
     {
       "id": "p01",
       "order": 10,
@@ -13,7 +21,7 @@
       "posterPath": "content/posters/p01.svg",
       "backgroundPath": "content/backgrounds/p01-plateau-base.png",
       "mascotKey": "main",
-      "positionMm": null,
+      "positionMm": -1600,
       "enabled": true
     },
     {
@@ -26,7 +34,7 @@
       "posterPath": "content/posters/p02.svg",
       "backgroundPath": "content/backgrounds/p02-geology-route.png",
       "mascotKey": "moving",
-      "positionMm": null,
+      "positionMm": -3200,
       "enabled": true
     },
     {
@@ -39,7 +47,7 @@
       "posterPath": "content/posters/p03.svg",
       "backgroundPath": "content/backgrounds/p03-glacier-source.png",
       "mascotKey": "playing",
-      "positionMm": null,
+      "positionMm": -4800,
       "enabled": true
     },
     {
@@ -52,7 +60,7 @@
       "posterPath": "content/posters/p04.svg",
       "backgroundPath": "content/backgrounds/p04-plateau-spirit.png",
       "mascotKey": "guide",
-      "positionMm": null,
+      "positionMm": -6400,
       "enabled": true
     }
   ]

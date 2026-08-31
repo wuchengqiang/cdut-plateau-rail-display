@@ -1,6 +1,6 @@
 {
   "provider": "mock",
-  "homePosition": "p01",
+  "homePosition": "p00",
   "mockMoveDurationMs": 1800,
   "arriveTimeoutMs": 10000,
   "positionsMm": {},

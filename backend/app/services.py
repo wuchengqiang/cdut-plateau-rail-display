@@ -428,7 +428,8 @@ class CarouselService:
         return {"success": True, "accepted": True, "message": "Carousel stopped"}
 
     def _ordered_scene_ids(self) -> list[str]:
-        return [scene_id for scene_id, _ in sorted(self.scene_service.scenes.items(), key=lambda item: (item[1].get("order", 0), item[0]))]
+        visible_scenes = ((scene_id, scene) for scene_id, scene in self.scene_service.scenes.items() if scene.get("visible", True))
+        return [scene_id for scene_id, _ in sorted(visible_scenes, key=lambda item: (item[1].get("order", 0), item[0]))]
 
     def _next_scene(self) -> str:
         scene_ids = self._ordered_scene_ids()

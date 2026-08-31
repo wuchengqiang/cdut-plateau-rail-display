@@ -97,7 +97,8 @@ async def activate_point(point_id: str, request: Request) -> dict[str, Any]:
 
 @app.get("/api/status")
 async def status() -> dict[str, Any]:
-    return {**runtime.state.payload(), "availablePointCount": len(runtime.scenes), "pointIds": list(runtime.scenes)}
+    visible_point_ids = [point_id for point_id, point in runtime.scenes.items() if point.get("visible", True)]
+    return {**runtime.state.payload(), "availablePointCount": len(visible_point_ids), "pointIds": visible_point_ids}
 
 
 @app.get("/api/display-config")
@@ -126,6 +127,7 @@ async def display_config() -> dict[str, Any]:
                 "backgroundPath": asset_url(scene["backgroundPath"]),
             }
             for scene in runtime.scenes.values()
+            if scene.get("visible", True)
         ],
     }
 
