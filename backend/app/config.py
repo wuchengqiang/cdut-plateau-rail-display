@@ -34,10 +34,20 @@ def load_wakefusion_configuration() -> dict[str, Any]:
     if not app_id or len(app_id) > 64 or any(not (char.isalnum() or char in "-_") for char in app_id):
         raise ValueError("WakeFusion appId 只能包含字母、数字、-、_")
 
+    revision = str(config.get("revision", "")).strip()
+    if not revision or len(revision) > 64 or any(ord(char) < 32 for char in revision):
+        raise ValueError("WakeFusion revision 必须为 1～64 位非空字符串")
+
+    def public_text(value: Any, maximum: int, label: str) -> str:
+        text = str(value).strip()
+        if not text or len(text) > maximum or any(ord(char) < 32 for char in text) or "<" in text or ">" in text:
+            raise ValueError(f"{label} 不符合公开动作文本要求")
+        return text
+
     handlers = {"scene", "play", "pause", "stop", "home", "carousel_start", "carousel_stop"}
     actions = config.get("actions")
-    if not isinstance(actions, list) or not actions:
-        raise ValueError("WakeFusion actions 必须是非空数组")
+    if not isinstance(actions, list) or not actions or len(actions) > 100:
+        raise ValueError("WakeFusion actions 必须是 1～100 项的数组")
 
     indexes: set[int] = set()
     normalized: list[dict[str, Any]] = []
@@ -48,21 +58,20 @@ def load_wakefusion_configuration() -> dict[str, Any]:
         if not isinstance(index, int) or index <= 0 or index in indexes:
             raise ValueError("WakeFusion action index 必须为唯一正整数")
         indexes.add(index)
-        name = str(raw_action.get("name", "")).strip()
-        description = str(raw_action.get("description", "")).strip()
+        name = public_text(raw_action.get("name", ""), 80, f"WakeFusion action {index} 名称")
+        description = public_text(raw_action.get("description", ""), 300, f"WakeFusion action {index} 说明")
         keywords = raw_action.get("keywords", [])
         handler = str(raw_action.get("handler", ""))
-        if not name or len(name) > 80 or not description or len(description) > 300:
-            raise ValueError(f"WakeFusion action {index} 的名称或说明不符合要求")
-        if not isinstance(keywords, list) or len(keywords) > 20 or any(not isinstance(word, str) or len(word) > 30 for word in keywords):
+        if not isinstance(keywords, list) or len(keywords) > 20:
             raise ValueError(f"WakeFusion action {index} 的关键词不符合要求")
+        normalized_keywords = [public_text(word, 30, f"WakeFusion action {index} 关键词") for word in keywords]
         if handler not in handlers:
             raise ValueError(f"WakeFusion action {index} 的 handler 不受支持")
         if handler == "scene" and not str(raw_action.get("target", "")).strip():
             raise ValueError(f"WakeFusion action {index} 缺少展项目标")
-        normalized.append({**raw_action, "index": index, "name": name, "description": description, "keywords": keywords, "handler": handler})
+        normalized.append({**raw_action, "index": index, "name": name, "description": description, "keywords": normalized_keywords, "handler": handler})
 
-    return {**config, "appId": app_id, "version": str(config.get("version", "1.0.0")), "actions": normalized}
+    return {**config, "appId": app_id, "version": str(config.get("version", "1.0.0")), "revision": revision, "actions": normalized}
 
 
 def load_configuration() -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:

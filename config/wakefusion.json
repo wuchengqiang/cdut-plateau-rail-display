@@ -2,6 +2,7 @@
   "schemaVersion": "wakefusion.embedded-app/v1",
   "appId": "cdut-slider-screen",
   "version": "1.0.0",
+  "revision": "actions-20260901-01",
   "actions": [
     {
       "index": 1,

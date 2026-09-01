@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import logging
+import os
 import secrets
 import time
 from collections import OrderedDict
@@ -28,6 +29,8 @@ class DisplayRuntime:
         self.clients: set[WebSocket] = set()
         self.app_config, self.scenes, self.machine = load_configuration()
         self.wakefusion = load_wakefusion_configuration()
+        # Host injects this at process start. It is deliberately never persisted or logged.
+        self.wakefusion_token = os.environ.get("WAKEFUSION_APP_TOKEN", "")
         self.admin_password = load_admin_password()
         self.admin_token = secrets.token_urlsafe(32)
         self.state = SystemState(current_scene=self._home_scene())
@@ -203,8 +206,16 @@ def wakefusion_error(code: str, message: str, status_code: int, request_id: str 
     return wakefusion_json(payload, status_code)
 
 
+def wakefusion_authorized(request: Request) -> bool:
+    authorization = request.headers.get("Authorization", "")
+    scheme, separator, token = authorization.partition(" ")
+    return bool(runtime.wakefusion_token) and separator == " " and scheme.lower() == "bearer" and hmac.compare_digest(token, runtime.wakefusion_token)
+
+
 @app.get("/api/wakefusion/v1/health")
-async def wakefusion_health() -> JSONResponse:
+async def wakefusion_health(request: Request) -> JSONResponse:
+    if not wakefusion_authorized(request):
+        return wakefusion_error("auth_failed", "缺少或未通过标准 Bearer Token 鉴权", 401)
     payload: dict[str, Any] = {
         "schemaVersion": WAKEFUSION_SCHEMA,
         "ok": True,
@@ -219,17 +230,21 @@ async def wakefusion_health() -> JSONResponse:
 
 
 @app.get("/api/wakefusion/v1/status")
-async def wakefusion_status() -> JSONResponse:
+async def wakefusion_status(request: Request) -> JSONResponse:
+    if not wakefusion_authorized(request):
+        return wakefusion_error("auth_failed", "缺少或未通过标准 Bearer Token 鉴权", 401)
     if not runtime.ready:
         return wakefusion_error("application_not_ready", "应用正在初始化", 503)
     return wakefusion_json({"schemaVersion": WAKEFUSION_SCHEMA, "ok": True, **runtime.state_for_wakefusion()})
 
 
 @app.get("/api/wakefusion/v1/actions")
-async def wakefusion_actions() -> JSONResponse:
+async def wakefusion_actions(request: Request) -> JSONResponse:
+    if not wakefusion_authorized(request):
+        return wakefusion_error("auth_failed", "缺少或未通过标准 Bearer Token 鉴权", 401)
     if not runtime.ready:
         return wakefusion_error("application_not_ready", "应用正在初始化", 503)
-    return wakefusion_json({"schemaVersion": WAKEFUSION_SCHEMA, "ok": True, "actions": runtime.public_actions()})
+    return wakefusion_json({"schemaVersion": WAKEFUSION_SCHEMA, "ok": True, "revision": runtime.wakefusion["revision"], "actions": runtime.public_actions()})
 
 
 async def run_wakefusion_action(action: dict[str, Any], index: int) -> tuple[int, str, str]:
@@ -277,6 +292,8 @@ async def run_wakefusion_action(action: dict[str, Any], index: int) -> tuple[int
 @app.post("/api/wakefusion/v1/actions/{index}/execute")
 async def wakefusion_execute(index: int, request: Request) -> JSONResponse:
     request_id = str(request.headers.get("Idempotency-Key", "")).strip()
+    if not wakefusion_authorized(request):
+        return wakefusion_error("auth_failed", "缺少或未通过标准 Bearer Token 鉴权", 401, request_id or None)
     try:
         body = await request.json()
     except Exception:

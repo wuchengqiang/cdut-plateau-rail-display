@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -49,10 +50,13 @@ def header(headers: dict[str, str], name: str) -> str:
 def main() -> None:
     port = available_port()
     base_url = f"http://127.0.0.1:{port}"
+    token = "local-development-token"
+    auth_headers = {"Authorization": f"Bearer {token}"}
     # Uses the configured mock provider only; no hardware command is emitted.
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
         cwd=ROOT,
+        env={**os.environ, "WAKEFUSION_APP_TOKEN": token},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -60,7 +64,7 @@ def main() -> None:
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             try:
-                health_status, health_headers, health = request(f"{base_url}/api/wakefusion/v1/health")
+                health_status, health_headers, health = request(f"{base_url}/api/wakefusion/v1/health", headers=auth_headers)
                 if health_status == 200 and health["ready"] is True:
                     break
             except urllib.error.URLError:
@@ -73,24 +77,28 @@ def main() -> None:
         assert header(health_headers, "Content-Type").startswith("application/json; charset=utf-8")
         assert health["appId"] == "cdut-slider-screen"
 
-        status_code, _, status = request(f"{base_url}/api/wakefusion/v1/status")
+        status_code, _, status = request(f"{base_url}/api/wakefusion/v1/status", headers=auth_headers)
         assert status_code == 200 and {"state", "playing", "updatedAt"}.issubset(status)
 
-        actions_code, _, actions_response = request(f"{base_url}/api/wakefusion/v1/actions")
+        actions_code, _, actions_response = request(f"{base_url}/api/wakefusion/v1/actions", headers=auth_headers)
         actions = actions_response["actions"]
         assert actions_code == 200 and [action["index"] for action in actions] == list(range(1, 11))
+        assert actions_response["revision"] == "actions-20260901-01"
         assert all(set(action) == {"index", "name", "description", "keywords"} for action in actions)
 
         request_id = str(uuid.uuid4())
-        headers = {"Idempotency-Key": request_id}
+        headers = {**auth_headers, "Idempotency-Key": request_id}
         first = request(f"{base_url}/api/wakefusion/v1/actions/1/execute", "POST", wakefusion_body(request_id), headers)
         duplicate = request(f"{base_url}/api/wakefusion/v1/actions/1/execute", "POST", wakefusion_body(request_id), headers)
         assert first[0] == 200 and first[2]["ok"] is True
         assert duplicate[0] == 200 and duplicate[2] == first[2]
 
         missing_id = str(uuid.uuid4())
-        missing = request(f"{base_url}/api/wakefusion/v1/actions/99/execute", "POST", wakefusion_body(missing_id), {"Idempotency-Key": missing_id})
+        missing = request(f"{base_url}/api/wakefusion/v1/actions/99/execute", "POST", wakefusion_body(missing_id), {**auth_headers, "Idempotency-Key": missing_id})
         assert missing[0] == 404 and missing[2]["error"]["code"] == "action_not_found"
+
+        unauthenticated = request(f"{base_url}/api/wakefusion/v1/health")
+        assert unauthenticated[0] == 401 and unauthenticated[2]["error"]["code"] == "auth_failed"
     finally:
         process.terminate()
         try:

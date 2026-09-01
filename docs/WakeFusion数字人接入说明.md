@@ -15,7 +15,7 @@
    └─ runtime\\
 ```
 
-Host 会先请求健康接口；未就绪时自动隐藏执行 `app\\start.bat`。脚本以前台方式运行服务，不打开浏览器，也不使用 `start` 脱离 Host 进程树。
+Host 先探测 `pageUrl`；页面不可访问时自动隐藏执行 `app\\start.bat`。页面初始 HTML 中的 `<meta name="wakefusion:embedded-app" content="v1">` 会让 Host 派生同源 V1 接口并进行健康检查。脚本以前台方式运行服务，不打开浏览器，也不使用 `start` 脱离 Host 进程树。
 
 ## 页面和健康地址
 
@@ -25,6 +25,14 @@ Host 会先请求健康接口；未就绪时自动隐藏执行 `app\\start.bat`�
 - 动作目录：`http://127.0.0.1:8000/api/wakefusion/v1/actions`
 
 服务只监听 `127.0.0.1:8000`。这不会影响服务端主动连接滑轨控制器 `192.168.1.104`，但会阻止局域网其他设备直接调用播控接口。
+
+四个 V1 接口都要求 Host 自动附带：
+
+```http
+Authorization: Bearer <WAKEFUSION_APP_TOKEN>
+```
+
+Token 仅从 Host 启动进程传入的 `WAKEFUSION_APP_TOKEN` 环境变量读取，不写入应用包、前端或日志。未携带或不匹配时接口返回 `401 auth_failed`。
 
 ## 嵌入页面行为
 
@@ -43,8 +51,12 @@ Host 会先请求健康接口；未就绪时自动隐藏执行 `app\\start.bat`�
 | 8 | 返回首页/机械原点 |
 | 9–10 | 开始、停止自动巡展 |
 
-动作的名称、关键词和内部映射由 `runtime\\config\\wakefusion.json` 管理。不要重排已经发布的 index；新增动作请使用新的正整数。
+动作的名称、关键词和内部映射由 `runtime\\config\\wakefusion.json` 管理。动作目录会返回其中的 `revision`；只要动作文本、启用状态或映射变化，就必须同步更换 `revision`。编辑后通过管理员面板的“重新加载配置”生效，无需重启 Host。不要重排已经发布的 index；新增动作请使用新的正整数。
 
 ## 现场配置
 
 首次使用请保持 `runtime\\config\\machine.json` 中的 `provider: "mock"`。确认控制器协议、IP、端口和安全条件后，再改为 `tcp`。WakeFusion 接入测试不应直接执行真实滑轨移动。
+
+## 标准原文
+
+对方提供的当前协议原文已存档于：`docs\\第三方对接标准\\WakeFusion嵌入应用开发与部署约定V1.md`。
