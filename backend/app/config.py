@@ -24,6 +24,47 @@ def load_admin_password() -> str:
     return password
 
 
+def load_wakefusion_configuration() -> dict[str, Any]:
+    """Load the only public action directory exposed to WakeFusion Host."""
+    config = read_json("config/wakefusion.json")
+    if config.get("schemaVersion") != "wakefusion.embedded-app/v1":
+        raise ValueError("WakeFusion 协议版本必须为 wakefusion.embedded-app/v1")
+
+    app_id = str(config.get("appId", ""))
+    if not app_id or len(app_id) > 64 or any(not (char.isalnum() or char in "-_") for char in app_id):
+        raise ValueError("WakeFusion appId 只能包含字母、数字、-、_")
+
+    handlers = {"scene", "play", "pause", "stop", "home", "carousel_start", "carousel_stop"}
+    actions = config.get("actions")
+    if not isinstance(actions, list) or not actions:
+        raise ValueError("WakeFusion actions 必须是非空数组")
+
+    indexes: set[int] = set()
+    normalized: list[dict[str, Any]] = []
+    for raw_action in actions:
+        if not isinstance(raw_action, dict):
+            raise ValueError("WakeFusion action 必须是对象")
+        index = raw_action.get("index")
+        if not isinstance(index, int) or index <= 0 or index in indexes:
+            raise ValueError("WakeFusion action index 必须为唯一正整数")
+        indexes.add(index)
+        name = str(raw_action.get("name", "")).strip()
+        description = str(raw_action.get("description", "")).strip()
+        keywords = raw_action.get("keywords", [])
+        handler = str(raw_action.get("handler", ""))
+        if not name or len(name) > 80 or not description or len(description) > 300:
+            raise ValueError(f"WakeFusion action {index} 的名称或说明不符合要求")
+        if not isinstance(keywords, list) or len(keywords) > 20 or any(not isinstance(word, str) or len(word) > 30 for word in keywords):
+            raise ValueError(f"WakeFusion action {index} 的关键词不符合要求")
+        if handler not in handlers:
+            raise ValueError(f"WakeFusion action {index} 的 handler 不受支持")
+        if handler == "scene" and not str(raw_action.get("target", "")).strip():
+            raise ValueError(f"WakeFusion action {index} 缺少展项目标")
+        normalized.append({**raw_action, "index": index, "name": name, "description": description, "keywords": keywords, "handler": handler})
+
+    return {**config, "appId": app_id, "version": str(config.get("version", "1.0.0")), "actions": normalized}
+
+
 def load_configuration() -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
     app = read_json("config/app.json")
     point_config = read_json("config/points.json")

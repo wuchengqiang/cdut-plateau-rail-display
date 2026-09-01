@@ -29,6 +29,9 @@ const fallbackConfig: DisplayConfig = {
 };
 const defaultStatus: Status = { currentScene: 'p01', targetScene: null, motorState: 'arrived', playbackState: 'idle', carouselMode: false, carouselDirection: 'forward', videoId: null, error: null };
 const stateLabel: Record<string, string> = { idle: '待命', moving: '滑轨移动中', arrived: '已到位', loading: '内容装载中', playing: '正在播放', paused: '已暂停', stopped: '已停止', error: '需要关注' };
+const pageParameters = new URLSearchParams(window.location.search);
+const embedMode = pageParameters.get('embed') === '1';
+const avatarAnchor = pageParameters.get('avatarAnchor') === 'left' ? 'left' : 'right';
 
 function App() {
   const [status, setStatus] = useState<Status>(defaultStatus);
@@ -85,6 +88,7 @@ function App() {
   const mascotKeys = ['main', 'moving', 'playing', 'guide'];
   const mascotKey = activePoint.mascotKey ?? mascotKeys[(Number(pointNumber) - 1) % mascotKeys.length];
   const toggleFullscreen = async () => {
+    if (embedMode) return;
     if (document.fullscreenElement) await document.exitFullscreen();
     else await playerRef.current?.requestFullscreen();
   };
@@ -108,18 +112,18 @@ function App() {
     }
   };
 
-  return <main className="exhibit-shell" style={{ backgroundImage: `url("${activePoint.backgroundPath}")` }}>
+  return <main className={`exhibit-shell ${embedMode ? `embed-mode avatar-anchor-${avatarAnchor}` : ''}`} style={{ backgroundImage: `url("${activePoint.backgroundPath}")` }}>
     <div className="terrain-lines" />
     <header className="masthead">
       <div className="brand"><img className="brand-emblem" src={displayConfig.emblemPath} alt="成都理工大学校徽" /><div><p>{displayConfig.title}</p><h1>{displayConfig.themeTitle} <i>{displayConfig.brandEnglish}</i></h1></div></div>
-      <div className="header-actions"><div className="coordinate"><span>{displayConfig.coordinatePrimary}</span><b>·</b><span>{displayConfig.coordinateSecondary}</span><small>{displayConfig.coordinateLabel}</small></div><button className="admin-entry" type="button" onClick={() => { setAdminLoginError(''); setAdminLoginOpen(true); }}>{labels.adminEntry}</button></div>
+      <div className="header-actions"><div className="coordinate"><span>{displayConfig.coordinatePrimary}</span><b>·</b><span>{displayConfig.coordinateSecondary}</span><small>{displayConfig.coordinateLabel}</small></div>{!embedMode && <button className="admin-entry" type="button" onClick={() => { setAdminLoginError(''); setAdminLoginOpen(true); }}>{labels.adminEntry}</button>}</div>
     </header>
     <section className="presentation">
       <aside className="scene-intro"><span className="eyebrow">{displayConfig.pointPrefix} / {pointNumber}</span><h2>{activePoint.title}</h2><p>{activePoint.subtitle}</p><div className="rule" /><small>{displayConfig.themeSubtitle}</small></aside>
       <div className="media-stack">
       <div ref={playerRef} className={`media-frame ${status.motorState === 'moving' ? 'is-moving' : ''}`}>
         <div className="frame-corner top-left" /><div className="frame-corner top-right" /><div className="frame-corner bottom-left" /><div className="frame-corner bottom-right" />
-        <div className="video-stage"><img className="poster" src={activePoint.posterPath} alt={`${activePoint.title}海报`} /><video ref={videoRef} className={videoVisible ? 'visible' : ''} src={activePoint.videoPath} poster={activePoint.posterPath} muted playsInline controls={videoVisible} onError={() => undefined} />
+        <div className="video-stage"><img className="poster" src={activePoint.posterPath} alt={`${activePoint.title}海报`} /><video ref={videoRef} className={videoVisible ? 'visible' : ''} src={activePoint.videoPath} poster={activePoint.posterPath} muted playsInline controls={!embedMode && videoVisible} onError={() => undefined} />
           {!videoVisible && <button className="poster-play" type="button" onClick={() => void command('play')} aria-label={labels.playCurrent}><span>▶</span>{labels.playCurrent}</button>}
           <button className="fullscreen-exit" type="button" onClick={() => void toggleFullscreen()}>{labels.exitFullScreen}</button>
           <div className="stage-overlay"><span>{displayConfig.title} · {displayConfig.themeTitle}</span></div>
@@ -127,14 +131,14 @@ function App() {
           {status.error && <div className="moving-cover error-cover"><strong>设备正在调整，请稍候</strong><span>{status.error}</span></div>}
         </div>
       </div>
-      <div className="control-dock" role="group" aria-label="展项控制"><button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button><button onClick={() => void command('home')}>{labels.home}</button><button onClick={() => void toggleFullscreen()}>{fullScreen ? labels.exitFullScreen : labels.fullScreen}</button></div>
+      <div className="control-dock" role="group" aria-label="展项控制">{embedMode && <><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button></>}<button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button><button onClick={() => void command('home')}>{labels.home}</button>{!embedMode && <button onClick={() => void toggleFullscreen()}>{fullScreen ? labels.exitFullScreen : labels.fullScreen}</button>}</div>
       </div>
     </section>
-    <div className="mascot-wrap" data-mode={mascotKey}><div className="mascot-callout"><span>{mascotKey === 'main' ? labels.mascotMainTitle : labels.mascotGuideTitle}</span><b>{mascotKey === 'main' ? labels.mascotMainText : labels.mascotGuideText}</b></div><img src={displayConfig.mascots[mascotKey] ?? displayConfig.mascots.main} alt="科考主题玩偶" /></div>
+    {!embedMode && <div className="mascot-wrap" data-mode={mascotKey}><div className="mascot-callout"><span>{mascotKey === 'main' ? labels.mascotMainTitle : labels.mascotGuideTitle}</span><b>{mascotKey === 'main' ? labels.mascotMainText : labels.mascotGuideText}</b></div><img src={displayConfig.mascots[mascotKey] ?? displayConfig.mascots.main} alt="科考主题玩偶" /></div>}
     <nav className="station-nav" aria-label="可配置点位">{displayConfig.points.map((point, index) => <button className={point.id === activeId ? 'active' : ''} key={point.id} onClick={() => void activate(point.id)}><em>{String(index + 1).padStart(2, '0')}</em><span>{point.navLabel}</span></button>)}</nav>
     <footer><span>{displayConfig.brandEnglish}</span><div className="track">{displayConfig.points.map((point) => <i key={point.id} className={point.id === activeId ? 'active' : ''} />)}</div><span>{status.carouselMode ? 'PING-PONG AUTO TOUR' : 'PLATEAU RAIL DISPLAY SYSTEM'}</span></footer>
-    {adminLoginOpen && <div className="admin-login-backdrop"><form className="admin-login" onSubmit={loginAdmin}><h2>{labels.adminLoginTitle}</h2><label>{labels.adminPassword}<input autoFocus type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required /></label>{adminLoginError && <p role="alert">{adminLoginError}</p>}<div><button type="button" onClick={() => setAdminLoginOpen(false)}>{labels.adminCancel}</button><button type="submit">{labels.adminLogin}</button></div></form></div>}
-    {admin && <section className="admin-panel"><button className="close" onClick={() => setAdmin(false)}>×</button><span>管理员调试面板</span><div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　影片：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '往返轮播' : '手动控制'}</div><div>{displayConfig.points.map((point) => <button key={point.id} onClick={() => void activate(point.id)}>{point.id} · {point.title}</button>)}</div><div><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button onClick={() => void command('home')}>{labels.home}</button></div><div><button onClick={() => void command('carousel/start')}>启动轮播</button><button onClick={() => void command('carousel/stop')}>停止轮播</button><button onClick={() => void hardwarePing()}>{labels.hardwarePing}</button></div>{hardwareMessage && <small className="hardware-message">{hardwareMessage}</small>}</section>}
+    {!embedMode && adminLoginOpen && <div className="admin-login-backdrop"><form className="admin-login" onSubmit={loginAdmin}><h2>{labels.adminLoginTitle}</h2><label>{labels.adminPassword}<input autoFocus type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required /></label>{adminLoginError && <p role="alert">{adminLoginError}</p>}<div><button type="button" onClick={() => setAdminLoginOpen(false)}>{labels.adminCancel}</button><button type="submit">{labels.adminLogin}</button></div></form></div>}
+    {!embedMode && admin && <section className="admin-panel"><button className="close" onClick={() => setAdmin(false)}>×</button><span>管理员调试面板</span><div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　影片：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '往返轮播' : '手动控制'}</div><div>{displayConfig.points.map((point) => <button key={point.id} onClick={() => void activate(point.id)}>{point.id} · {point.title}</button>)}</div><div><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button onClick={() => void command('home')}>{labels.home}</button></div><div><button onClick={() => void command('carousel/start')}>启动轮播</button><button onClick={() => void command('carousel/stop')}>停止轮播</button><button onClick={() => void hardwarePing()}>{labels.hardwarePing}</button></div>{hardwareMessage && <small className="hardware-message">{hardwareMessage}</small>}</section>}
   </main>;
 }
 

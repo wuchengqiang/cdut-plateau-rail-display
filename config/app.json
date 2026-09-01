@@ -8,7 +8,7 @@
   "pointPrefix": "POINT",
   "coordinateLabel": "高海拔综合科学考察",
   "emblemPath": "content/branding/cdut-emblem.svg",
-  "apiHost": "0.0.0.0",
+  "apiHost": "127.0.0.1",
   "apiPort": 8000,
   "kiosk": true,
   "carouselDwellSeconds": 12,
