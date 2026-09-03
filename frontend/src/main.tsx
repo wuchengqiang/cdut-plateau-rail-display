@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type TouchEvent as ReactTouchEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -25,7 +25,7 @@ const fallbackConfig: DisplayConfig = {
   brandEnglish: 'QINGHAI–TIBET PLATEAU SCIENTIFIC EXPEDITION', coordinatePrimary: 'QINGHAI–TIBET PLATEAU', coordinateSecondary: 'EXPEDITION', pointPrefix: 'POINT', coordinateLabel: '高海拔综合科学考察', emblemPath: '/content/branding/cdut-emblem.svg',
   points: fallbackPoints,
   mascots: { main: '/content/mascots/mascot-main-original.png', moving: '/content/mascots/mascot-moving-original.png', playing: '/content/mascots/mascot-playing-original.png', guide: '/content/mascots/mascot-guide-original.png', error: '/content/mascots/mascot-guide-original.png' },
-  labels: { play: '播放', pause: '暂停', stop: '停止', autoTour: '自动巡展', stopTour: '停止巡展', home: '回原点', fullScreen: '全屏播放', exitFullScreen: '退出全屏', playCurrent: '播放当前视频', adminEntry: '管理员入口', adminLoginTitle: '管理员验证', adminPassword: '请输入管理密码', adminLogin: '进入面板', adminCancel: '取消', adminPasswordError: '密码不正确，请重试', hardwarePing: '硬件 Ping', hardwarePingSuccess: '控制器响应：', hardwarePingFailed: '控制器未通过 Ping：', arriving: '正在前往', arrivedHint: '抵达后将自动播放对应内容', mascotMainTitle: '地质科考伙伴', mascotGuideTitle: '科考导览伙伴', mascotMainText: '地质锤，敲开探索之门', mascotGuideText: '探索，从这里出发' }
+  labels: { play: '播放', pause: '暂停', stop: '停止', mute: '静音', unmute: '开启声音', volume: '音量', autoTour: '自动巡展', stopTour: '停止巡展', home: '回原点', fullScreen: '全屏播放', exitFullScreen: '退出全屏', playCurrent: '播放当前视频', swipeHint: '左右滑动切换展项', swipeLocked: '滑轨移动中，请稍候', swipeBoundary: '已到达当前方向的最后展项', swipeSwitching: '正在切换到', adminEntry: '管理员入口', adminLoginTitle: '管理员验证', adminPassword: '请输入管理密码', adminLogin: '进入面板', adminCancel: '取消', adminPasswordError: '密码不正确，请重试', hardwarePing: '硬件 Ping', hardwarePingSuccess: '控制器响应：', hardwarePingFailed: '控制器未通过 Ping：', arriving: '正在前往', arrivedHint: '抵达后将自动播放对应内容', mascotMainTitle: '地质科考伙伴', mascotGuideTitle: '科考导览伙伴', mascotMainText: '地质锤，敲开探索之门', mascotGuideText: '探索，从这里出发' }
 };
 const defaultStatus: Status = { currentScene: 'p01', targetScene: null, motorState: 'arrived', playbackState: 'idle', carouselMode: false, carouselDirection: 'forward', videoId: null, error: null };
 const stateLabel: Record<string, string> = { idle: '待命', moving: '滑轨移动中', arrived: '已到位', loading: '内容装载中', playing: '正在播放', paused: '已暂停', stopped: '已停止', error: '需要关注' };
@@ -43,7 +43,14 @@ function App() {
   const [displayConfig, setDisplayConfig] = useState<DisplayConfig>(fallbackConfig);
   const videoRef = useRef<HTMLVideoElement>(null);
   const playerRef = useRef<HTMLDivElement>(null);
+  const swipeStart = useRef<{ x: number; y: number } | null>(null);
   const [fullScreen, setFullScreen] = useState(false);
+  const [videoMuted, setVideoMuted] = useState(() => localStorage.getItem('rail-video-muted') !== 'false');
+  const [volume, setVolume] = useState(() => {
+    const saved = Number(localStorage.getItem('rail-video-volume'));
+    return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : .6;
+  });
+  const [swipeMessage, setSwipeMessage] = useState('');
   const activeId = status.targetPointId ?? status.targetScene ?? status.currentPointId ?? status.currentScene ?? displayConfig.points[0]?.id;
   const activePoint = useMemo(() => displayConfig.points.find((point) => point.id === activeId) ?? displayConfig.points[0], [activeId, displayConfig]);
   const labels = { ...fallbackConfig.labels, ...displayConfig.labels };
@@ -82,6 +89,16 @@ function App() {
     if (status.playbackState === 'stopped') { video.pause(); video.currentTime = 0; }
   }, [status.playbackState, activeId]);
 
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video) {
+      video.muted = videoMuted;
+      video.volume = volume;
+    }
+    localStorage.setItem('rail-video-muted', String(videoMuted));
+    localStorage.setItem('rail-video-volume', String(volume));
+  }, [videoMuted, volume, activeId]);
+
   if (!activePoint) return null;
   const videoVisible = status.playbackState === 'playing' || status.playbackState === 'paused';
   const pointNumber = String(displayConfig.points.findIndex((point) => point.id === activePoint.id) + 1).padStart(2, '0');
@@ -111,6 +128,42 @@ function App() {
       setHardwareMessage(`${labels.hardwarePingFailed}网络请求失败`);
     }
   };
+  const setVideoVolume = (value: number) => {
+    setVolume(value);
+    setVideoMuted(value === 0);
+  };
+  const toggleMute = () => {
+    if (videoMuted && volume === 0) setVolume(.6);
+    setVideoMuted((muted) => !muted);
+  };
+  const beginSwipe = (event: ReactTouchEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement).closest('button, input')) return;
+    const touch = event.touches[0];
+    if (touch) swipeStart.current = { x: touch.clientX, y: touch.clientY };
+  };
+  const finishSwipe = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const start = swipeStart.current;
+    swipeStart.current = null;
+    const touch = event.changedTouches[0];
+    if (!start || !touch) return;
+    const distanceX = touch.clientX - start.x;
+    const distanceY = touch.clientY - start.y;
+    const threshold = Math.max(56, window.innerWidth * .05);
+    if (Math.abs(distanceX) < threshold || Math.abs(distanceX) < Math.abs(distanceY) * 1.3) return;
+    if (status.motorState === 'moving' || status.targetPointId || status.targetScene) {
+      setSwipeMessage(labels.swipeLocked);
+      return;
+    }
+    const currentIndex = displayConfig.points.findIndex((point) => point.id === activePoint.id);
+    const nextIndex = currentIndex + (distanceX < 0 ? 1 : -1);
+    const nextPoint = displayConfig.points[nextIndex];
+    if (!nextPoint) {
+      setSwipeMessage(labels.swipeBoundary);
+      return;
+    }
+    setSwipeMessage(`${labels.swipeSwitching} ${nextPoint.navLabel}`);
+    void activate(nextPoint.id);
+  };
 
   return <main className={`exhibit-shell ${embedMode ? `embed-mode avatar-anchor-${avatarAnchor}` : ''}`} style={{ backgroundImage: `url("${activePoint.backgroundPath}")` }}>
     <div className="terrain-lines" />
@@ -123,15 +176,15 @@ function App() {
       <div className="media-stack">
       <div ref={playerRef} className={`media-frame ${status.motorState === 'moving' ? 'is-moving' : ''}`}>
         <div className="frame-corner top-left" /><div className="frame-corner top-right" /><div className="frame-corner bottom-left" /><div className="frame-corner bottom-right" />
-        <div className="video-stage"><img className="poster" src={activePoint.posterPath} alt={`${activePoint.title}海报`} /><video ref={videoRef} className={videoVisible ? 'visible' : ''} src={activePoint.videoPath} poster={activePoint.posterPath} muted playsInline controls={!embedMode && videoVisible} onError={() => undefined} />
+        <div className="video-stage" onTouchStart={beginSwipe} onTouchEnd={finishSwipe} onTouchCancel={() => { swipeStart.current = null; }}><img className="poster" src={activePoint.posterPath} alt={`${activePoint.title}海报`} /><video ref={videoRef} className={videoVisible ? 'visible' : ''} src={activePoint.videoPath} poster={activePoint.posterPath} muted={videoMuted} playsInline controls={false} onError={() => undefined} />
           {!videoVisible && <button className="poster-play" type="button" onClick={() => void command('play')} aria-label={labels.playCurrent}><span>▶</span>{labels.playCurrent}</button>}
           <button className="fullscreen-exit" type="button" onClick={() => void toggleFullscreen()}>{labels.exitFullScreen}</button>
-          <div className="stage-overlay"><span>{displayConfig.title} · {displayConfig.themeTitle}</span></div>
+          <div className="stage-overlay"><span>{displayConfig.title} · {displayConfig.themeTitle}</span><span className="swipe-tip" aria-live="polite">{swipeMessage || labels.swipeHint}</span></div>
           {status.motorState === 'moving' && <div className="moving-cover"><div className="radar" /><strong>{labels.arriving} {activePoint.title}</strong><span>{labels.arrivedHint}</span></div>}
           {status.error && <div className="moving-cover error-cover"><strong>设备正在调整，请稍候</strong><span>{status.error}</span></div>}
         </div>
       </div>
-      <div className="control-dock" role="group" aria-label="展项控制">{embedMode && <><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button></>}<button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button><button onClick={() => void command('home')}>{labels.home}</button>{!embedMode && <button onClick={() => void toggleFullscreen()}>{fullScreen ? labels.exitFullScreen : labels.fullScreen}</button>}</div>
+      <div className="control-dock" aria-label="展项控制"><div className="playback-controls" role="group" aria-label="视频播放控制"><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button className={videoMuted ? 'selected' : ''} onClick={toggleMute}>{videoMuted ? labels.unmute : labels.mute}</button><label className="volume-control"><span>{labels.volume}</span><input type="range" min="0" max="1" step="0.05" value={videoMuted ? 0 : volume} onChange={(event) => setVideoVolume(Number(event.target.value))} aria-label={labels.volume} /></label></div><div className="rail-controls" role="group" aria-label="滑轨控制"><button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button><button onClick={() => void command('home')}>{labels.home}</button>{!embedMode && <button onClick={() => void toggleFullscreen()}>{fullScreen ? labels.exitFullScreen : labels.fullScreen}</button>}</div></div>
       </div>
     </section>
     {!embedMode && <div className="mascot-wrap" data-mode={mascotKey}><div className="mascot-callout"><span>{mascotKey === 'main' ? labels.mascotMainTitle : labels.mascotGuideTitle}</span><b>{mascotKey === 'main' ? labels.mascotMainText : labels.mascotGuideText}</b></div><img src={displayConfig.mascots[mascotKey] ?? displayConfig.mascots.main} alt="科考主题玩偶" /></div>}
