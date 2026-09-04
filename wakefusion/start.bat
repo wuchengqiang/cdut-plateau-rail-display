@@ -1,5 +1,8 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-"%~dp0runtime\青藏高原科考滑轨屏服务.exe" --no-browser
+set "APP_EXE="
+for %%F in ("%~dp0runtime\*.exe") do if exist "%%~fF" set "APP_EXE=%%~fF"
+if not defined APP_EXE exit /b 2
+"%APP_EXE%" --no-browser
 exit /b %errorlevel%

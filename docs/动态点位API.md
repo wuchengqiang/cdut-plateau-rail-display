@@ -34,4 +34,4 @@
 
 > WakeFusion 数字人不得直接调用上述内部接口。数字人只调用带 Bearer Token 的 `/api/wakefusion/v1/*` 标准接口，并按 `/actions` 当前返回数组的 0 基索引执行动作。详见《青藏高原科考滑轨屏-WakeFusion数字人接入与部署交接手册》；禁用动作会导致后续索引动态前移。
 
-管理员入口在页面右上角。密码保存于本机 `config/admin.json`（该文件不会提交到 Git）；首次部署时复制 `config/admin.example.json` 为 `config/admin.json` 后修改 `password`。管理员登录成功后，浏览器会获得仅本机有效的会话 Cookie，配置重载和硬件诊断接口都需要该登录状态。
+管理员入口在页面右上角。密码保存于本机 `config/admin.json`（该文件不会提交到 Git）；首次部署时复制 `config/admin.example.json` 为 `config/admin.json`，默认密码为 `2468`，也可改为其他不少于 4 位的密码。管理员登录成功后，浏览器会获得仅本机有效的会话 Cookie，配置重载和硬件诊断接口都需要该登录状态。

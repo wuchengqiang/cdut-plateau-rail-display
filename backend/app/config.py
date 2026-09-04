@@ -21,8 +21,8 @@ def read_json(relative_path: str) -> dict[str, Any]:
 
 def load_admin_password() -> str:
     password = str(read_json("config/admin.json").get("password", ""))
-    if len(password) < 8:
-        raise ValueError("管理员密码至少需要 8 位")
+    if len(password) < 4:
+        raise ValueError("管理员密码至少需要 4 位")
     return password
 
 

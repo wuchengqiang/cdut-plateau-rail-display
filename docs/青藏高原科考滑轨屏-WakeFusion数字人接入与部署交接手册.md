@@ -25,7 +25,7 @@
 1. 停止部署电脑上的 WakeFusion Host。
 2. 解压 V1.1 应用包。
 3. 将解压得到的 `app` 文件夹整体放入 WakeFusion Host 根目录；如已有旧 `app`，先备份再整体替换。
-4. 首次部署必须修改 `app/runtime/config/admin.json` 中的初始管理员密码。
+4. `app/runtime/config/admin.json` 的默认管理员密码是 `2468`；如需修改，密码不得少于 4 位。
 5. 确认目录层级：
 
    ```text
