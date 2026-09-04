@@ -2,7 +2,7 @@
   "schemaVersion": "wakefusion.embedded-app/v1",
   "appId": "cdut-slider-screen",
   "name": "青藏高原科考滑轨屏",
-  "type": "web",
+  "type": "service",
   "pageUrl": "http://127.0.0.1:8000/?embed=1&avatarAnchor=right",
   "interactive": true,
   "startupTimeoutMs": 30000,

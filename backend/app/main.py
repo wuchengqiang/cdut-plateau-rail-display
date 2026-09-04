@@ -13,10 +13,21 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import ROOT, STATIC_ROOT, load_admin_password, load_configuration, load_wakefusion_configuration
+from .config import (
+    ROOT,
+    STATIC_ROOT,
+    enabled_wakefusion_actions,
+    load_admin_password,
+    load_configuration,
+    load_wakefusion_configuration,
+    public_wakefusion_actions,
+    save_wakefusion_text_configuration,
+    wakefusion_actions_hash,
+)
 from .services import CarouselService, MediaService, MotorProtocolError, MotorProvider, SceneService, SystemState, create_motor_provider
 
 
@@ -42,6 +53,7 @@ class DisplayRuntime:
         self._initialize_task: asyncio.Task[None] | None = None
         self._wakefusion_lock = asyncio.Lock()
         self._idempotency: OrderedDict[str, tuple[float, int, dict[str, Any]]] = OrderedDict()
+        self.last_wakefusion_action_id: str | None = None
 
     def _home_scene(self) -> str | None:
         return next((scene_id for scene_id, scene in self.scenes.items() if scene["motorPosition"] == self.machine["homePosition"]), None)
@@ -60,6 +72,8 @@ class DisplayRuntime:
     async def reload_content(self) -> dict[str, Any]:
         self.app_config, self.scenes, self.machine = load_configuration()
         self.wakefusion = load_wakefusion_configuration()
+        if self.last_wakefusion_action_id and not any(action["id"] == self.last_wakefusion_action_id for action in self.wakefusion["actions"]):
+            self.last_wakefusion_action_id = None
         self.admin_password = load_admin_password()
         self.scene.scenes = self.scenes
         self.carousel.app_config = self.app_config
@@ -95,20 +109,28 @@ class DisplayRuntime:
 
     def action_for_scene(self, scene_id: str | None) -> dict[str, Any] | None:
         if scene_id:
-            return next((action for action in self.wakefusion["actions"] if action["handler"] == "scene" and action.get("target") == scene_id), None)
+            return next((action for action in self.enabled_actions() if action["handler"] == "scene" and action.get("target") == scene_id), None)
         return None
 
+    def enabled_actions(self) -> list[dict[str, Any]]:
+        return enabled_wakefusion_actions(self.wakefusion)
+
     def public_actions(self) -> list[dict[str, Any]]:
-        return [{key: action[key] for key in ("index", "name", "description", "keywords")} for action in self.wakefusion["actions"]]
+        return public_wakefusion_actions(self.wakefusion)
 
     def state_for_wakefusion(self) -> dict[str, Any]:
         active_scene = self.state.target_scene or self.state.current_scene
         active_action = self.action_for_scene(active_scene)
+        if self.last_wakefusion_action_id:
+            last_action = next((action for action in self.enabled_actions() if action["id"] == self.last_wakefusion_action_id), None)
+            active_action = last_action or active_action
         if active_action is None and self.state.current_scene == self.machine["homePosition"]:
-            active_action = next((action for action in self.wakefusion["actions"] if action["handler"] == "home"), None)
+            active_action = next((action for action in self.enabled_actions() if action["handler"] == "home"), None)
         active_view = self.scenes.get(active_scene or "", {}).get("title")
         if not active_view and active_action:
             active_view = active_action["name"]
+        enabled_actions = self.enabled_actions()
+        active_action_index = enabled_actions.index(active_action) if active_action in enabled_actions else None
 
         if not self.ready:
             public_state = "starting"
@@ -122,9 +144,10 @@ class DisplayRuntime:
             public_state = "idle"
 
         return {
-            "activeActionIndex": active_action["index"] if active_action else None,
+            "activeActionIndex": active_action_index,
             "activeView": active_view,
             "playing": self.state.playback_state == "playing",
+            "actionsHash": wakefusion_actions_hash(self.wakefusion),
             "state": public_state,
             "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
             "details": {
@@ -179,6 +202,7 @@ def command(request: Request) -> dict[str, str]:
 
 
 async def manual_scene(scene_id: str, request: Request) -> dict[str, Any]:
+    runtime.last_wakefusion_action_id = None
     await runtime.carousel.stop()
     return await runtime.scene.activate_scene(scene_id, command(request))
 
@@ -210,6 +234,14 @@ def wakefusion_authorized(request: Request) -> bool:
     authorization = request.headers.get("Authorization", "")
     scheme, separator, token = authorization.partition(" ")
     return bool(runtime.wakefusion_token) and separator == " " and scheme.lower() == "bearer" and hmac.compare_digest(token, runtime.wakefusion_token)
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
+    if request.url.path.startswith("/api/wakefusion/v1"):
+        request_id = str(request.headers.get("Idempotency-Key", "")).strip()
+        return wakefusion_error("invalid_request", "请求路径或参数格式不正确", 400, request_id or None)
+    return JSONResponse({"detail": error.errors()}, status_code=422)
 
 
 @app.get("/api/wakefusion/v1/health")
@@ -244,7 +276,7 @@ async def wakefusion_actions(request: Request) -> JSONResponse:
         return wakefusion_error("auth_failed", "缺少或未通过标准 Bearer Token 鉴权", 401)
     if not runtime.ready:
         return wakefusion_error("application_not_ready", "应用正在初始化", 503)
-    return wakefusion_json({"schemaVersion": WAKEFUSION_SCHEMA, "ok": True, "revision": runtime.wakefusion["revision"], "actions": runtime.public_actions()})
+    return wakefusion_json({"schemaVersion": WAKEFUSION_SCHEMA, "ok": True, "actions": runtime.public_actions()})
 
 
 async def run_wakefusion_action(action: dict[str, Any], index: int) -> tuple[int, str, str]:
@@ -260,26 +292,42 @@ async def run_wakefusion_action(action: dict[str, Any], index: int) -> tuple[int
         if target not in runtime.scenes:
             logger.error("WakeFusion 动作 %s 配置了不存在的展项", index)
             return 500, "action_failed", "动作配置不可用"
+        if runtime.state.current_scene == target and runtime.state.motor_state == "arrived":
+            return 409, "action_conflict", f"当前已在{action['name']}展项"
         await runtime.carousel.stop(action_command)
         result = await runtime.scene.activate_scene(target, action_command)
     elif handler == "play":
+        if not runtime.state.video_id:
+            return 409, "action_conflict", "当前没有已装载的视频，请先切换到展项"
+        if runtime.state.playback_state == "playing":
+            return 409, "action_conflict", "当前视频已经在播放"
         runtime.state.last_command = action_command
         await runtime.media.play()
         result = {"success": True, "accepted": True}
     elif handler == "pause":
+        if runtime.state.playback_state != "playing":
+            return 409, "action_conflict", "当前没有正在播放的视频"
         runtime.state.last_command = action_command
         await runtime.media.pause()
         result = {"success": True, "accepted": True}
     elif handler == "stop":
+        if runtime.state.playback_state not in {"playing", "paused", "loading"}:
+            return 409, "action_conflict", "当前视频已经停止"
         runtime.state.last_command = action_command
         await runtime.media.stop()
         result = {"success": True, "accepted": True}
     elif handler == "home":
+        if runtime.state.current_scene == runtime.machine["homePosition"] and runtime.state.motor_state == "arrived" and not runtime.state.carousel_mode:
+            return 409, "action_conflict", "滑轨当前已经在机械原点"
         await runtime.carousel.stop(action_command)
         result = await runtime.scene.go_home(action_command)
     elif handler == "carousel_start":
+        if runtime.state.carousel_mode:
+            return 409, "action_conflict", "自动巡展已经开始"
         result = await runtime.carousel.start(action_command)
     elif handler == "carousel_stop":
+        if not runtime.state.carousel_mode:
+            return 409, "action_conflict", "当前没有进行自动巡展"
         result = await runtime.carousel.stop(action_command)
     else:  # Config validation prevents this branch; retain a safe public response.
         return 500, "action_failed", "动作配置不可用"
@@ -310,9 +358,10 @@ async def wakefusion_execute(index: int, request: Request) -> JSONResponse:
     if cached:
         return wakefusion_json(cached[1], cached[0])
 
-    action = next((item for item in runtime.wakefusion["actions"] if item["index"] == index), None)
-    if action is None:
+    enabled_actions = runtime.enabled_actions()
+    if index < 0 or index >= len(enabled_actions):
         return wakefusion_error("action_not_found", "动作不存在或未启用", 404, request_id)
+    action = enabled_actions[index]
     if not runtime.ready:
         return wakefusion_error("application_not_ready", "应用正在初始化", 503, request_id)
 
@@ -334,6 +383,7 @@ async def wakefusion_execute(index: int, request: Request) -> JSONResponse:
                 "requestId": request_id,
             }
         else:
+            runtime.last_wakefusion_action_id = action["id"]
             payload = {
                 "schemaVersion": WAKEFUSION_SCHEMA,
                 "ok": True,
@@ -345,6 +395,14 @@ async def wakefusion_execute(index: int, request: Request) -> JSONResponse:
         runtime.cache_action(request_id, status_code, payload)
         logger.info("WakeFusion 动作 requestId=%s index=%s status=%s", request_id, index, status_code)
         return wakefusion_json(payload, status_code)
+
+
+@app.api_route("/api/wakefusion/v1/{invalid_path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+async def wakefusion_invalid_path(invalid_path: str, request: Request) -> JSONResponse:
+    request_id = str(request.headers.get("Idempotency-Key", "")).strip()
+    if not wakefusion_authorized(request):
+        return wakefusion_error("auth_failed", "缺少或未通过标准 Bearer Token 鉴权", 401, request_id or None)
+    return wakefusion_error("invalid_request", f"不支持的 WakeFusion V1 接口：{invalid_path}", 400, request_id or None)
 
 
 @app.api_route("/api/control/scene/{scene_id}", methods=["GET", "POST"])
@@ -403,6 +461,7 @@ async def points() -> list[dict[str, Any]]:
 
 @app.api_route("/api/control/play", methods=["GET", "POST"])
 async def play(request: Request) -> dict[str, Any]:
+    runtime.last_wakefusion_action_id = None
     runtime.state.last_command = command(request)
     await runtime.media.play()
     return {"success": True, "message": "Playback started"}
@@ -410,6 +469,7 @@ async def play(request: Request) -> dict[str, Any]:
 
 @app.api_route("/api/control/pause", methods=["GET", "POST"])
 async def pause(request: Request) -> dict[str, Any]:
+    runtime.last_wakefusion_action_id = None
     runtime.state.last_command = command(request)
     await runtime.media.pause()
     return {"success": True, "message": "Playback paused"}
@@ -417,6 +477,7 @@ async def pause(request: Request) -> dict[str, Any]:
 
 @app.api_route("/api/control/stop", methods=["GET", "POST"])
 async def stop(request: Request) -> dict[str, Any]:
+    runtime.last_wakefusion_action_id = None
     runtime.state.last_command = command(request)
     await runtime.media.stop()
     return {"success": True, "message": "Playback stopped"}
@@ -424,17 +485,20 @@ async def stop(request: Request) -> dict[str, Any]:
 
 @app.api_route("/api/control/home", methods=["GET", "POST"])
 async def home(request: Request) -> dict[str, Any]:
+    runtime.last_wakefusion_action_id = None
     await runtime.carousel.stop()
     return await runtime.scene.go_home(command(request))
 
 
 @app.api_route("/api/control/carousel/start", methods=["GET", "POST"])
 async def carousel_start(request: Request) -> dict[str, Any]:
+    runtime.last_wakefusion_action_id = None
     return await runtime.carousel.start(command(request))
 
 
 @app.api_route("/api/control/carousel/stop", methods=["GET", "POST"])
 async def carousel_stop(request: Request) -> dict[str, Any]:
+    runtime.last_wakefusion_action_id = None
     return await runtime.carousel.stop(command(request))
 
 
@@ -453,6 +517,70 @@ async def admin_login(request: Request) -> JSONResponse:
 async def reload_content(request: Request) -> dict[str, Any]:
     require_admin(request)
     return await runtime.reload_content()
+
+
+def wakefusion_configuration_is_busy() -> bool:
+    return bool(
+        runtime.state.target_scene
+        or runtime.state.motor_state == "moving"
+        or runtime.state.carousel_mode
+        or runtime.state.playback_state in {"loading", "playing"}
+    )
+
+
+@app.get("/api/admin/wakefusion/actions")
+async def admin_wakefusion_actions(request: Request) -> dict[str, Any]:
+    require_admin(request)
+    enabled_index = {action["id"]: index for index, action in enumerate(runtime.enabled_actions())}
+    return {
+        "success": True,
+        "actionsHash": wakefusion_actions_hash(runtime.wakefusion),
+        "safeToSave": not wakefusion_configuration_is_busy(),
+        "actions": [
+            {
+                "id": action["id"],
+                "index": enabled_index.get(action["id"]),
+                "enabled": action["enabled"],
+                "name": action["name"],
+                "description": action["description"],
+                "keywords": action["keywords"],
+                "negativeKeywords": action["negativeKeywords"],
+            }
+            for action in runtime.wakefusion["actions"]
+        ],
+    }
+
+
+@app.put("/api/admin/wakefusion/actions")
+async def save_admin_wakefusion_actions(request: Request) -> JSONResponse:
+    require_admin(request)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"success": False, "error": "INVALID_REQUEST", "message": "请求体必须为 JSON"}, status_code=400)
+    if not isinstance(body, dict) or not isinstance(body.get("actions"), list):
+        return JSONResponse({"success": False, "error": "INVALID_REQUEST", "message": "缺少动作数组"}, status_code=400)
+
+    async with runtime._wakefusion_lock:
+        if wakefusion_configuration_is_busy():
+            return JSONResponse(
+                {"success": False, "error": "APPLICATION_BUSY", "message": "滑轨、视频或自动巡展正在运行，请停止后再保存动作配置"},
+                status_code=409,
+            )
+        try:
+            runtime.wakefusion = save_wakefusion_text_configuration(body["actions"])
+        except ValueError as error:
+            return JSONResponse({"success": False, "error": "ACTION_DEFINITION_INVALID", "message": str(error)}, status_code=400)
+        runtime.last_wakefusion_action_id = None
+        await runtime.publish(runtime.state.payload())
+        return JSONResponse(
+            {
+                "success": True,
+                "message": "动作配置已保存，WakeFusion Host 将在约 5 秒内刷新",
+                "actionsHash": wakefusion_actions_hash(runtime.wakefusion),
+                "actionCount": len(runtime.enabled_actions()),
+            }
+        )
 
 
 @app.post("/api/admin/hardware/ping")
@@ -486,6 +614,11 @@ async def websocket_status(websocket: WebSocket) -> None:
             await websocket.receive_text()
     except WebSocketDisconnect:
         runtime.clients.discard(websocket)
+
+
+@app.get("/subscriptconfig.html")
+async def wakefusion_configuration_page() -> FileResponse:
+    return FileResponse(STATIC_ROOT / "subscriptconfig.html")
 
 
 @app.get("/{path:path}")

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>青藏高原科考滑轨屏｜数字人动作配置</title>
+    <link rel="stylesheet" href="/subscriptconfig.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <div>
+          <p class="kicker">WAKEFUSION V1.1</p>
+          <h1>数字人动作配置</h1>
+          <p>只修改数字人看到的动作文字与启用状态。动作内部实现和顺序由程序固定。</p>
+        </div>
+        <div class="hash-card">
+          <span>动作指纹</span>
+          <code id="actions-hash">未加载</code>
+        </div>
+      </header>
+
+      <section id="login-panel" class="panel login-panel">
+        <h2>管理员验证</h2>
+        <p>输入滑轨屏管理员密码后进入配置页。</p>
+        <form id="login-form">
+          <label>管理员密码<input id="password" type="password" autocomplete="current-password" required></label>
+          <button type="submit">进入配置</button>
+        </form>
+      </section>
+
+      <section id="editor-panel" class="panel" hidden>
+        <div class="notice warning">
+          <strong>保存安全要求</strong>
+          <span>请在讲解停止、视频未播放、滑轨未移动且自动巡展已停止时保存。停用动作会使后续下标整体前移。</span>
+        </div>
+        <div id="message" class="message" role="status" aria-live="polite"></div>
+        <div id="actions" class="actions"></div>
+        <footer class="toolbar">
+          <button id="reload-button" class="secondary" type="button">重新读取</button>
+          <button id="save-button" type="button">保存动作配置</button>
+        </footer>
+      </section>
+    </main>
+    <script type="module" src="/subscriptconfig.js"></script>
+  </body>
+</html>
