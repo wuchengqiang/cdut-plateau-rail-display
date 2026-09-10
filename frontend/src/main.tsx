@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type TouchEvent as ReactTouchEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type TouchEvent as ReactTouchEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import './styles.css';
+import { readMediaMetrics, synchronizeMedia } from './media-controller';
+import './exhibit.css';
 
 type Point = { id: string; order: number; title: string; navLabel: string; subtitle: string; videoPath: string; posterPath: string; backgroundPath: string; mascotKey?: string };
 type Status = {
-  currentScene: string | null; targetScene: string | null; currentPointId?: string | null; targetPointId?: string | null;
-  motorState: string; playbackState: string; carouselMode: boolean; carouselDirection: string; videoId: string | null; error: string | null;
+  currentScene: string | null; targetScene: string | null; currentPointId?: string | null; targetPointId?: string | null; displayPointId?: string | null;
+  motorState: string; playbackState: string; playbackRevision?: number; carouselMode: boolean; carouselDirection: string; videoId: string | null; error: string | null;
 };
 type Labels = Record<string, string>;
 type DisplayConfig = {
   title: string; themeTitle: string; themeSubtitle: string; brandEnglish: string; coordinatePrimary: string; coordinateSecondary: string; pointPrefix: string; coordinateLabel: string; emblemPath: string;
-  labels: Labels; mascots: Record<string, string>; points: Point[];
+  labels: Labels; showMascots: boolean; mascots: Record<string, string>; points: Point[];
 };
 
 const fallbackPoints: Point[] = [
@@ -22,13 +23,22 @@ const fallbackPoints: Point[] = [
 
 const fallbackConfig: DisplayConfig = {
   title: '成都理工大学校史馆', themeTitle: '青藏高原科考', themeSubtitle: '青藏高原地质与生态科考专题展',
-  brandEnglish: 'QINGHAI–TIBET PLATEAU SCIENTIFIC EXPEDITION', coordinatePrimary: 'QINGHAI–TIBET PLATEAU', coordinateSecondary: 'EXPEDITION', pointPrefix: 'POINT', coordinateLabel: '高海拔综合科学考察', emblemPath: '/content/branding/cdut-emblem.svg',
+  brandEnglish: '', coordinatePrimary: '', coordinateSecondary: '', pointPrefix: '展项', coordinateLabel: '', emblemPath: '/content/branding/cdut-emblem.svg',
   points: fallbackPoints,
+  showMascots: false,
   mascots: { main: '/content/mascots/mascot-main-original.png', moving: '/content/mascots/mascot-moving-original.png', playing: '/content/mascots/mascot-playing-original.png', guide: '/content/mascots/mascot-guide-original.png', error: '/content/mascots/mascot-guide-original.png' },
-  labels: { play: '播放', pause: '暂停', stop: '停止', mute: '静音', unmute: '开启声音', volume: '音量', autoTour: '自动巡展', stopTour: '停止巡展', home: '回原点', fullScreen: '全屏播放', exitFullScreen: '退出全屏', playCurrent: '播放当前视频', swipeHint: '左右滑动切换展项', swipeLocked: '滑轨移动中，请稍候', swipeBoundary: '已到达当前方向的最后展项', swipeSwitching: '正在切换到', adminEntry: '管理员入口', adminLoginTitle: '管理员验证', adminPassword: '请输入管理密码', adminLogin: '进入面板', adminCancel: '取消', adminPasswordError: '密码不正确，请重试', hardwarePing: '硬件 Ping', hardwarePingSuccess: '控制器响应：', hardwarePingFailed: '控制器未通过 Ping：', arriving: '正在前往', arrivedHint: '抵达后将自动播放对应内容', mascotMainTitle: '地质科考伙伴', mascotGuideTitle: '科考导览伙伴', mascotMainText: '地质锤，敲开探索之门', mascotGuideText: '探索，从这里出发' }
+  labels: {
+    play: '播放', pause: '暂停', stop: '停止', mute: '静音', unmute: '开启声音', volume: '音量',
+    autoTour: '自动巡展', stopTour: '停止巡展', home: '回原点', playCurrent: '播放当前视频',
+    swipeLocked: '滑轨移动中，请稍候', swipeBoundary: '已到达当前方向的最后展项', swipeSwitching: '正在切换到',
+    adminEntry: '管理员入口', adminLoginTitle: '管理员验证', adminPassword: '请输入管理密码',
+    adminLogin: '进入面板', adminCancel: '取消', adminPasswordError: '密码不正确，请重试',
+    hardwarePing: '连接检测', hardwarePingSuccess: '控制器响应：', hardwarePingFailed: '控制器未响应：',
+    mascotMainTitle: '地质科考伙伴', mascotGuideTitle: '科考导览伙伴', mascotMainText: '地质锤，敲开探索之门', mascotGuideText: '探索，从这里出发'
+  }
 };
 const defaultStatus: Status = { currentScene: 'p01', targetScene: null, motorState: 'arrived', playbackState: 'idle', carouselMode: false, carouselDirection: 'forward', videoId: null, error: null };
-const stateLabel: Record<string, string> = { idle: '待命', moving: '滑轨移动中', arrived: '已到位', loading: '内容装载中', playing: '正在播放', paused: '已暂停', stopped: '已停止', error: '需要关注' };
+const stateLabel: Record<string, string> = { idle: '待命', initializing: '控制器连接中', moving: '滑轨移动中', arrived: '已到位', loading: '内容装载中', playing: '正在播放', paused: '已暂停', stopped: '已停止', error: '需要关注' };
 const pageParameters = new URLSearchParams(window.location.search);
 const embedMode = pageParameters.get('embed') === '1';
 const avatarAnchor = pageParameters.get('avatarAnchor') === 'left' ? 'left' : 'right';
@@ -42,24 +52,46 @@ function App() {
   const [hardwareMessage, setHardwareMessage] = useState('');
   const [displayConfig, setDisplayConfig] = useState<DisplayConfig>(fallbackConfig);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const playerRef = useRef<HTMLDivElement>(null);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
-  const [fullScreen, setFullScreen] = useState(false);
+  const [requestError, setRequestError] = useState('');
   const [videoMuted, setVideoMuted] = useState(() => localStorage.getItem('rail-video-muted') !== 'false');
   const [volume, setVolume] = useState(() => {
-    const saved = Number(localStorage.getItem('rail-video-volume'));
+    const saved = Number(localStorage.getItem('rail-video-volume') ?? '.6');
     return Number.isFinite(saved) && saved >= 0 && saved <= 1 ? saved : .6;
   });
   const [swipeMessage, setSwipeMessage] = useState('');
-  const activeId = status.targetPointId ?? status.targetScene ?? status.currentPointId ?? status.currentScene ?? displayConfig.points[0]?.id;
+  const activeId = status.targetPointId ?? status.targetScene ?? status.displayPointId ?? status.currentPointId ?? status.currentScene ?? displayConfig.points[0]?.id;
   const activePoint = useMemo(() => displayConfig.points.find((point) => point.id === activeId) ?? displayConfig.points[0], [activeId, displayConfig]);
-  const labels = { ...fallbackConfig.labels, ...displayConfig.labels };
+  const labels: Labels = { ...fallbackConfig.labels, avatarArea: '数字人展示区', mediaError: '此展项暂未配置可播放的视频', ...displayConfig.labels };
+  const [mediaError, setMediaError] = useState(false);
+  const [needsGesture, setNeedsGesture] = useState(false);
+  const [videoShape, setVideoShape] = useState({ source: '', width: 0, height: 0 });
+  const mediaEvents = useRef<Array<{ time: string; event: string; position: number }>>([]);
+  const [mediaMetrics, setMediaMetrics] = useState<ReturnType<typeof readMediaMetrics> | null>(null);
+  const [copyMessage, setCopyMessage] = useState('');
+  const recordMediaEvent = useCallback((event: string) => {
+    mediaEvents.current.push({ time: new Date().toISOString(), event, position: Number((videoRef.current?.currentTime ?? 0).toFixed(2)) });
+    if (mediaEvents.current.length > 80) mediaEvents.current.shift();
+  }, []);
+  const playFailed = useCallback((error: unknown) => {
+    if (error instanceof DOMException && error.name === 'AbortError') return;
+    recordMediaEvent(`播放未成功：${error instanceof Error ? error.name : '未知错误'}`);
+    setNeedsGesture(true);
+  }, [recordMediaEvent]);
 
   const loadStatus = useCallback(async () => {
     try { setStatus(await (await fetch('/api/status')).json() as Status); } catch { /* 离线演示仍可查看界面 */ }
   }, []);
-  const command = useCallback(async (path: string) => { await fetch(`/api/control/${path}`, { method: 'POST' }); await loadStatus(); }, [loadStatus]);
-  const activate = useCallback(async (id: string) => { await fetch(`/api/control/points/${encodeURIComponent(id)}/activate`, { method: 'POST' }); await loadStatus(); }, [loadStatus]);
+  const command = useCallback(async (path: string) => {
+    setRequestError('');
+    try {
+      const response = await fetch(`/api/control/${path}`, { method: 'POST' });
+      const result = await response.json() as { success?: boolean; detail?: string; message?: string; error?: string };
+      if (!response.ok || result.success === false) setRequestError(result.detail ?? result.message ?? result.error ?? '操作未成功，请稍后重试');
+      await loadStatus();
+    } catch { setRequestError('服务暂时无法连接，请检查程序是否运行'); }
+  }, [loadStatus]);
+  const activate = useCallback((id: string) => command(`points/${encodeURIComponent(id)}/activate`), [command]);
 
   useEffect(() => {
     void loadStatus();
@@ -75,19 +107,34 @@ function App() {
     return () => removeEventListener('keydown', handler);
   }, []);
 
-  useEffect(() => {
-    const handleFullscreen = () => setFullScreen(document.fullscreenElement === playerRef.current);
-    document.addEventListener('fullscreenchange', handleFullscreen);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreen);
-  }, []);
+  useEffect(() => { setMediaError(false); setNeedsGesture(false); }, [activePoint?.videoPath]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
-    if (status.playbackState === 'playing') void video.play().catch(() => undefined);
-    if (status.playbackState === 'paused') video.pause();
-    if (status.playbackState === 'stopped') { video.pause(); video.currentTime = 0; }
-  }, [status.playbackState, activeId]);
+    synchronizeMedia(video, { source: activePoint?.videoPath ?? '', state: status.playbackState, revision: status.playbackRevision ?? 0 }, recordMediaEvent, playFailed);
+  }, [status.playbackState, status.playbackRevision, activePoint?.videoPath, recordMediaEvent, playFailed]);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const events: Record<string, string> = { loadstart: '装载视频', loadedmetadata: '读取视频尺寸', playing: '开始输出画面', pause: '视频暂停', waiting: '等待视频数据', stalled: '读取暂时停滞', seeking: '跳转进度', seeked: '跳转完成', ended: '播放结束', error: '视频错误' };
+    const record = (event: Event) => recordMediaEvent(events[event.type] ?? event.type);
+    for (const name of Object.keys(events)) video.addEventListener(name, record);
+    return () => { for (const name of Object.keys(events)) video.removeEventListener(name, record); };
+  }, [recordMediaEvent]);
+
+  useEffect(() => {
+    if (!admin) return;
+    const sample = () => { if (videoRef.current) setMediaMetrics(readMediaMetrics(videoRef.current)); };
+    sample();
+    const timer = window.setInterval(sample, 1500);
+    return () => window.clearInterval(timer);
+  }, [admin]);
+
+  useEffect(() => {
+    recordMediaEvent(`滑轨${stateLabel[status.motorState] ?? status.motorState}；已确认点位${status.currentPointId ?? status.currentScene ?? '无'}；目标${status.targetPointId ?? status.targetScene ?? '无'}`);
+  }, [status.motorState, status.currentPointId, status.currentScene, status.targetPointId, status.targetScene, recordMediaEvent]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -97,18 +144,15 @@ function App() {
     }
     localStorage.setItem('rail-video-muted', String(videoMuted));
     localStorage.setItem('rail-video-volume', String(volume));
-  }, [videoMuted, volume, activeId]);
+  }, [videoMuted, volume]);
 
   if (!activePoint) return null;
   const videoVisible = status.playbackState === 'playing' || status.playbackState === 'paused';
+  const videoRatio = videoShape.source === activePoint.videoPath && videoShape.width > 0 ? videoShape.width / videoShape.height : 16 / 9;
+  const stageStyle = { '--video-ratio': videoRatio, '--video-height': `${100 / videoRatio}cqw` } as CSSProperties;
   const pointNumber = String(displayConfig.points.findIndex((point) => point.id === activePoint.id) + 1).padStart(2, '0');
   const mascotKeys = ['main', 'moving', 'playing', 'guide'];
   const mascotKey = activePoint.mascotKey ?? mascotKeys[(Number(pointNumber) - 1) % mascotKeys.length];
-  const toggleFullscreen = async () => {
-    if (embedMode) return;
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await playerRef.current?.requestFullscreen();
-  };
   const loginAdmin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setAdminLoginError('');
@@ -135,6 +179,16 @@ function App() {
   const toggleMute = () => {
     if (videoMuted && volume === 0) setVolume(.6);
     setVideoMuted((muted) => !muted);
+  };
+  const playVideo = () => {
+    // A touch gesture can unblock browser autoplay without waiting for a fetch.
+    if (videoRef.current) void videoRef.current.play().catch(playFailed);
+    void command('play');
+  };
+  const copyDiagnostics = async () => {
+    const report = { collectedAt: new Date().toISOString(), pageMode: embedMode ? '嵌入' : '独立', userAgent: navigator.userAgent, point: activePoint.id, video: activePoint.videoPath, status, media: videoRef.current ? readMediaMetrics(videoRef.current) : null, events: mediaEvents.current };
+    try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setCopyMessage('播放诊断已复制'); }
+    catch { setCopyMessage('复制未成功，请拍下本面板的诊断数据'); }
   };
   const beginSwipe = (event: ReactTouchEvent<HTMLDivElement>) => {
     if ((event.target as HTMLElement).closest('button, input')) return;
@@ -165,33 +219,33 @@ function App() {
     void activate(nextPoint.id);
   };
 
-  return <main className={`exhibit-shell ${embedMode ? `embed-mode avatar-anchor-${avatarAnchor}` : ''}`} style={{ backgroundImage: `url("${activePoint.backgroundPath}")` }}>
+  return <main className={`exhibit-shell avatar-anchor-${avatarAnchor} ${embedMode ? 'embed-mode' : ''}`} style={{ backgroundImage: `url("${activePoint.backgroundPath}")` }}>
     <div className="terrain-lines" />
     <header className="masthead">
-      <div className="brand"><img className="brand-emblem" src={displayConfig.emblemPath} alt="成都理工大学校徽" /><div><p>{displayConfig.title}</p><h1>{displayConfig.themeTitle} <i>{displayConfig.brandEnglish}</i></h1></div></div>
-      <div className="header-actions"><div className="coordinate"><span>{displayConfig.coordinatePrimary}</span><b>·</b><span>{displayConfig.coordinateSecondary}</span><small>{displayConfig.coordinateLabel}</small></div>{!embedMode && <button className="admin-entry" type="button" onClick={() => { setAdminLoginError(''); setAdminLoginOpen(true); }}>{labels.adminEntry}</button>}</div>
+      <div className="brand"><img className="brand-emblem" src={displayConfig.emblemPath} alt="成都理工大学校徽" /><div><p>{displayConfig.title}</p><h1>{displayConfig.themeTitle}</h1></div></div>
+      <div className="header-actions">{!embedMode && <button className="admin-entry" type="button" onClick={() => { setAdminLoginError(''); setAdminLoginOpen(true); }}>{labels.adminEntry}</button>}</div>
     </header>
     <section className="presentation">
-      <aside className="scene-intro"><span className="eyebrow">{displayConfig.pointPrefix} / {pointNumber}</span><h2>{activePoint.title}</h2><p>{activePoint.subtitle}</p><div className="rule" /><small>{displayConfig.themeSubtitle}</small></aside>
+      <aside className="scene-intro"><h2><span className="point-number">{pointNumber}</span>{activePoint.title}</h2><p>{activePoint.subtitle}</p></aside>
       <div className="media-stack">
-      <div ref={playerRef} className={`media-frame ${status.motorState === 'moving' ? 'is-moving' : ''}`}>
+      <div className="media-frame">
         <div className="frame-corner top-left" /><div className="frame-corner top-right" /><div className="frame-corner bottom-left" /><div className="frame-corner bottom-right" />
-        <div className="video-stage" onTouchStart={beginSwipe} onTouchEnd={finishSwipe} onTouchCancel={() => { swipeStart.current = null; }}><img className="poster" src={activePoint.posterPath} alt={`${activePoint.title}海报`} /><video ref={videoRef} className={videoVisible ? 'visible' : ''} src={activePoint.videoPath} poster={activePoint.posterPath} muted={videoMuted} playsInline controls={false} onError={() => undefined} />
-          {!videoVisible && <button className="poster-play" type="button" onClick={() => void command('play')} aria-label={labels.playCurrent}><span>▶</span>{labels.playCurrent}</button>}
-          <button className="fullscreen-exit" type="button" onClick={() => void toggleFullscreen()}>{labels.exitFullScreen}</button>
-          <div className="stage-overlay"><span>{displayConfig.title} · {displayConfig.themeTitle}</span><span className="swipe-tip" aria-live="polite">{swipeMessage || labels.swipeHint}</span></div>
-          {status.motorState === 'moving' && <div className="moving-cover"><div className="radar" /><strong>{labels.arriving} {activePoint.title}</strong><span>{labels.arrivedHint}</span></div>}
-          {status.error && <div className="moving-cover error-cover"><strong>设备正在调整，请稍候</strong><span>{status.error}</span></div>}
+        <div className="video-stage" style={stageStyle} onTouchStart={beginSwipe} onTouchEnd={finishSwipe} onTouchCancel={() => { swipeStart.current = null; }}>
+          {(!videoVisible || mediaError) && <img className="poster" src={activePoint.backgroundPath} alt="" />}
+          <video ref={videoRef} className={videoVisible && !mediaError ? 'visible' : ''} src={activePoint.videoPath} muted={videoMuted} preload="auto" playsInline controls={false} disablePictureInPicture onLoadedMetadata={(event) => { const video = event.currentTarget; setVideoShape({ source: activePoint.videoPath, width: video.videoWidth, height: video.videoHeight }); }} onPlaying={() => setNeedsGesture(false)} onEnded={() => setNeedsGesture(true)} onLoadedData={() => setMediaError(false)} onError={() => setMediaError(true)} />
+          {(!videoVisible || needsGesture) && !mediaError && <button className="poster-play" type="button" onClick={playVideo} aria-label={labels.playCurrent}><span>▶</span>{labels.playCurrent}</button>}
         </div>
       </div>
-      <div className="control-dock" aria-label="展项控制"><div className="playback-controls" role="group" aria-label="视频播放控制"><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button className={videoMuted ? 'selected' : ''} onClick={toggleMute}>{videoMuted ? labels.unmute : labels.mute}</button><label className="volume-control"><span>{labels.volume}</span><input type="range" min="0" max="1" step="0.05" value={videoMuted ? 0 : volume} onChange={(event) => setVideoVolume(Number(event.target.value))} aria-label={labels.volume} /></label></div><div className="rail-controls" role="group" aria-label="滑轨控制"><button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button><button onClick={() => void command('home')}>{labels.home}</button>{!embedMode && <button onClick={() => void toggleFullscreen()}>{fullScreen ? labels.exitFullScreen : labels.fullScreen}</button>}</div></div>
+      <div className="control-dock" aria-label="展项控制"><div className="playback-controls" role="group" aria-label="视频播放控制"><button onClick={playVideo}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button className={videoMuted ? 'selected' : ''} onClick={toggleMute}>{videoMuted ? labels.unmute : labels.mute}</button><label className="volume-control"><span>{labels.volume}</span><input type="range" min="0" max="1" step="0.05" value={videoMuted ? 0 : volume} onChange={(event) => setVideoVolume(Number(event.target.value))} aria-label={labels.volume} /></label></div><div className="rail-controls" role="group" aria-label="滑轨控制"><button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button><button onClick={() => void command('home')}>{labels.home}</button></div></div>
       </div>
     </section>
-    {!embedMode && <div className="mascot-wrap" data-mode={mascotKey}><div className="mascot-callout"><span>{mascotKey === 'main' ? labels.mascotMainTitle : labels.mascotGuideTitle}</span><b>{mascotKey === 'main' ? labels.mascotMainText : labels.mascotGuideText}</b></div><img src={displayConfig.mascots[mascotKey] ?? displayConfig.mascots.main} alt="科考主题玩偶" /></div>}
-    <nav className="station-nav" aria-label="可配置点位">{displayConfig.points.map((point, index) => <button className={point.id === activeId ? 'active' : ''} key={point.id} onClick={() => void activate(point.id)}><em>{String(index + 1).padStart(2, '0')}</em><span>{point.navLabel}</span></button>)}</nav>
-    <footer><span>{displayConfig.brandEnglish}</span><div className="track">{displayConfig.points.map((point) => <i key={point.id} className={point.id === activeId ? 'active' : ''} />)}</div><span>{status.carouselMode ? 'PING-PONG AUTO TOUR' : 'PLATEAU RAIL DISPLAY SYSTEM'}</span></footer>
+    <aside className="avatar-lane" aria-label={labels.avatarArea} data-avatar-anchor={avatarAnchor} />
+    {!embedMode && displayConfig.showMascots === true && <div className="mascot-wrap" data-mode={mascotKey}><div className="mascot-callout"><span>{mascotKey === 'main' ? labels.mascotMainTitle : labels.mascotGuideTitle}</span><b>{mascotKey === 'main' ? labels.mascotMainText : labels.mascotGuideText}</b></div><img src={displayConfig.mascots[mascotKey] ?? displayConfig.mascots.main} alt="科考主题玩偶" /></div>}
+    <nav className="station-nav" aria-label="可配置点位">{displayConfig.points.map((point, index) => <button disabled={Boolean(status.targetPointId ?? status.targetScene) && point.id !== activeId} aria-current={point.id === activeId ? 'true' : undefined} className={point.id === activeId ? 'active' : ''} key={point.id} onClick={() => void activate(point.id)}><em>{String(index + 1).padStart(2, '0')}</em><span>{point.navLabel}</span></button>)}</nav>
     {!embedMode && adminLoginOpen && <div className="admin-login-backdrop"><form className="admin-login" onSubmit={loginAdmin}><h2>{labels.adminLoginTitle}</h2><label>{labels.adminPassword}<input autoFocus type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required /></label>{adminLoginError && <p role="alert">{adminLoginError}</p>}<div><button type="button" onClick={() => setAdminLoginOpen(false)}>{labels.adminCancel}</button><button type="submit">{labels.adminLogin}</button></div></form></div>}
-    {!embedMode && admin && <section className="admin-panel"><button className="close" onClick={() => setAdmin(false)}>×</button><span>管理员调试面板</span><div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　影片：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '往返轮播' : '手动控制'}</div><div>{displayConfig.points.map((point) => <button key={point.id} onClick={() => void activate(point.id)}>{point.id} · {point.title}</button>)}</div><div><button onClick={() => void command('play')}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button onClick={() => void command('home')}>{labels.home}</button></div><div><button onClick={() => void command('carousel/start')}>启动轮播</button><button onClick={() => void command('carousel/stop')}>停止轮播</button><button onClick={() => void hardwarePing()}>{labels.hardwarePing}</button></div>{hardwareMessage && <small className="hardware-message">{hardwareMessage}</small>}</section>}
+    {!embedMode && admin && <section className="admin-panel"><button className="close" onClick={() => setAdmin(false)}>×</button><span>管理员调试面板</span><div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　影片：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '往返轮播' : '手动控制'}</div><div>{displayConfig.points.map((point, index) => <button key={point.id} onClick={() => void activate(point.id)}>{index + 1} · {point.title}</button>)}</div><div><button onClick={playVideo}>{labels.play}</button><button onClick={() => void command('pause')}>{labels.pause}</button><button onClick={() => void command('stop')}>{labels.stop}</button><button onClick={() => void command('home')}>{labels.home}</button></div><div><button onClick={() => void command('carousel/start')}>启动轮播</button><button onClick={() => void command('carousel/stop')}>停止轮播</button><button onClick={() => void hardwarePing()}>{labels.hardwarePing}</button></div>{hardwareMessage && <small className="hardware-message">{hardwareMessage}</small>}
+      <div className="admin-diagnostics"><h3>播放诊断</h3>{mediaMetrics && <p>视频尺寸：{mediaMetrics.resolution}<br />进度：{mediaMetrics.currentTime} / {mediaMetrics.duration ?? '未知'} 秒　缓冲余量：{mediaMetrics.bufferedSeconds} 秒<br />丢帧：{mediaMetrics.droppedFrames ?? '不支持'} / {mediaMetrics.totalFrames ?? '不支持'}<br />实际暂停：{mediaMetrics.paused ? '是' : '否'}　播放结束：{mediaMetrics.ended ? '是' : '否'}</p>}<button onClick={() => void copyDiagnostics()}>复制播放诊断</button>{copyMessage && <p>{copyMessage}</p>}{status.error && <p>硬件：{status.error}</p>}{requestError && <p>操作：{requestError}</p>}{mediaError && <p>{labels.mediaError}</p>}{swipeMessage && <p>{swipeMessage}</p>}</div>
+    </section>}
   </main>;
 }
 

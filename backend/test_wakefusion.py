@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -57,11 +59,20 @@ def main() -> None:
     base_url = f"http://127.0.0.1:{port}"
     token = "local-development-token"
     auth_headers = {"Authorization": f"Bearer {token}"}
-    # Uses the configured mock provider only; no hardware command is emitted.
+    # Always isolate tests from the deployment's real controller configuration.
+    temporary = tempfile.TemporaryDirectory(prefix="rail-contract-")
+    test_root = Path(temporary.name)
+    shutil.copytree(ROOT.parent / "config", test_root / "config")
+    shutil.copytree(ROOT / "static", test_root / "backend" / "static")
+    (test_root / "content").mkdir()
+    machine_path = test_root / "config" / "machine.json"
+    machine = json.loads(machine_path.read_text(encoding="utf-8"))
+    machine["provider"] = "mock"
+    machine_path.write_text(json.dumps(machine), encoding="utf-8")
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
         cwd=ROOT,
-        env={**os.environ, "WAKEFUSION_APP_TOKEN": token},
+        env={**os.environ, "WAKEFUSION_APP_TOKEN": token, "RAIL_DISPLAY_ROOT": str(test_root)},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -81,7 +92,7 @@ def main() -> None:
         assert header(health_headers, "Cache-Control") == "no-store"
         assert header(health_headers, "Content-Type").startswith("application/json; charset=utf-8")
         assert health["appId"] == "cdut-slider-screen"
-        assert health["version"] == "1.1.0"
+        assert health["version"] == "1.1.3"
 
         status_code, _, status = request(f"{base_url}/api/wakefusion/v1/status", headers=auth_headers)
         assert status_code == 200 and {"state", "playing", "updatedAt", "actionsHash"}.issubset(status)
@@ -106,9 +117,11 @@ def main() -> None:
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
             state_code, _, current_state = request(f"{base_url}/api/wakefusion/v1/status", headers=auth_headers)
-            if state_code == 200 and current_state["playing"] is True and current_state["activeView"] == "高原启程":
+            if state_code == 200 and current_state["playing"] is True and current_state["activeView"] == "高原启程" and current_state["details"]["motorState"] == "arrived":
                 break
             time.sleep(0.05)
+        else:
+            raise AssertionError('Mock rail never reported arrival')
         conflict_id = str(uuid.uuid4())
         conflict = request(
             f"{base_url}/api/wakefusion/v1/actions/0/execute",
@@ -163,6 +176,8 @@ def main() -> None:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
+            process.wait(timeout=5)
+        temporary.cleanup()
 
     print("WakeFusion V1.1 smoke test passed")
 

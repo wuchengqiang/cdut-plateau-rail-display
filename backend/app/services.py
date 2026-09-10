@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 import socket
 from dataclasses import dataclass, field
@@ -32,8 +33,10 @@ class MotorProtocolError(RuntimeError):
 class SystemState:
     current_scene: str | None = None
     target_scene: str | None = None
+    display_scene: str | None = None
     motor_state: str = "idle"
     playback_state: str = "idle"
+    playback_revision: int = 0
     carousel_mode: bool = False
     carousel_direction: str = "forward"
     video_id: str | None = None
@@ -46,8 +49,10 @@ class SystemState:
             "targetScene": self.target_scene,
             "currentPointId": self.current_scene,
             "targetPointId": self.target_scene,
+            "displayPointId": self.display_scene,
             "motorState": self.motor_state,
             "playbackState": self.playback_state,
+            "playbackRevision": self.playback_revision,
             "carouselMode": self.carousel_mode,
             "carouselDirection": self.carousel_direction,
             "videoId": self.video_id,
@@ -143,7 +148,8 @@ class NetworkMotorProvider:
         self.state.error = None
         await self.publish(self.state.payload())
         reply = await self._request(f"MOVE {self._format_mm(target_mm)}", self.move_timeout)
-        if not reply.upper().startswith("OK:MOVE"):
+        arrived = re.fullmatch(r"OK:MOVE\s+([+-]?\d+(?:\.\d+)?)", reply, flags=re.IGNORECASE)
+        if not arrived or not math.isclose(float(arrived.group(1)), target_mm, rel_tol=0, abs_tol=0.001):
             raise MotorProtocolError(f"MOVE 响应异常：{reply}")
         self.position = position
         self.state.motor_state = "arrived"
@@ -283,15 +289,22 @@ class UdpMotorProvider(NetworkMotorProvider):
         self._socket.setblocking(False)
 
     async def _request(self, command: str, timeout: float | None = None) -> str:
-        await self._connect()
-        assert self._socket
         async with self._command_lock:
-            loop = asyncio.get_running_loop()
-            await loop.sock_sendto(self._socket, self._wire_command(command), (self.host, self.port))
+            # A fresh endpoint isolates replies from earlier timed-out/cancelled commands.
+            # UDP connect filters packets to the configured controller; it sends no handshake.
             try:
-                raw, _ = await asyncio.wait_for(loop.sock_recvfrom(self._socket, 4096), timeout or self.command_timeout)
+                await self._connect()
+                assert self._socket
+                loop = asyncio.get_running_loop()
+                await loop.sock_connect(self._socket, (self.host, self.port))
+                await loop.sock_sendall(self._socket, self._wire_command(command))
+                raw = await asyncio.wait_for(loop.sock_recv(self._socket, 4096), timeout or self.command_timeout)
             except TimeoutError as error:
                 raise MotorProtocolError(f"控制器 UDP 命令超时：{command}") from error
+            finally:
+                # Never automatically resend MOVE: loss of an acknowledgement is not proof
+                # that the controller failed to execute the physical movement.
+                await self.dispose()
             reply = raw.decode("utf-8", errors="replace").strip()
             if reply.upper().startswith("ERR:"):
                 raise MotorProtocolError(reply)
@@ -319,20 +332,24 @@ class MediaService:
         self.state, self.publish = state, publish
 
     async def load(self, scene_id: str) -> None:
+        self.state.playback_revision += 1
         self.state.playback_state = "loading"
         self.state.video_id = f"scene-{scene_id}-video"
         await self.publish(self.state.payload())
 
     async def play(self) -> None:
+        self.state.playback_revision += 1
         self.state.playback_state = "playing"
         await self.publish(self.state.payload())
 
     async def pause(self) -> None:
         if self.state.video_id:
+            self.state.playback_revision += 1
             self.state.playback_state = "paused"
             await self.publish(self.state.payload())
 
     async def stop(self) -> None:
+        self.state.playback_revision += 1
         self.state.playback_state = "stopped"
         await self.publish(self.state.payload())
 
@@ -350,7 +367,7 @@ class SceneService:
             if self.state.target_scene == scene_id or (self.state.current_scene == scene_id and self.state.motor_state == "arrived"):
                 return {"success": True, "accepted": False, "scene": scene_id, "message": f"Scene {scene_id} already active or pending"}
             if self._task and not self._task.done():
-                self._task.cancel()
+                return {"success": False, "error": "MOTOR_BUSY", "message": "滑轨正在执行上一个动作，请等待到位后再切换"}
             self.state.target_scene = scene_id
             self.state.error = None
             self.state.last_command = command
@@ -361,13 +378,17 @@ class SceneService:
     async def _run_scene(self, scene_id: str) -> None:
         try:
             await self.media.stop()
+            # The displayed content is independent of the last confirmed rail position.
+            # Start once on selection; arrival must not restart a paused/stopped video.
+            self.state.display_scene = scene_id
+            await self.media.load(scene_id)
+            await self.media.play()
             moved = await self.motor.move_to(self.scenes[scene_id]["motorPosition"])
             if not moved:
                 raise RuntimeError("电机未到位")
             self.state.current_scene = scene_id
             self.state.target_scene = None
-            await self.media.load(scene_id)
-            await self.media.play()
+            await self.publish(self.state.payload())
         except asyncio.CancelledError:
             logger.info("场景任务被新命令取消")
             await self.motor.stop()
@@ -376,7 +397,7 @@ class SceneService:
             logger.exception("场景切换失败")
             self.state.error = str(error)
             self.state.motor_state = "error"
-            self.state.playback_state = "error"
+            # A missing hardware acknowledgement must not hide or rewind the video.
             self.state.target_scene = None
             await self.publish(self.state.payload())
 
@@ -396,6 +417,7 @@ class SceneService:
             await self.media.stop()
             await self.motor.home()
             self.state.current_scene = next((scene_id for scene_id, scene in self.scenes.items() if scene["motorPosition"] == self.motor.machine["homePosition"]), None)
+            self.state.display_scene = None
             await self.publish(self.state.payload())
         except asyncio.CancelledError:
             await self.motor.stop()

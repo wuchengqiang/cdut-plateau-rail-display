@@ -1,12 +1,12 @@
 {
-  "provider": "mock",
+  "provider": "udp",
   "homePosition": "p00",
   "mockMoveDurationMs": 1800,
   "arriveTimeoutMs": 10000,
   "positionsMm": {},
   "network": {
-    "host": "192.168.1.104",
-    "port": 8080,
+    "host": "127.0.0.1",
+    "port": 53500,
     "sharedKey": "",
     "connectTimeoutMs": 5000,
     "commandTimeoutMs": 5000,

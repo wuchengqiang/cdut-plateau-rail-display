@@ -33,6 +33,8 @@ from .services import CarouselService, MediaService, MotorProtocolError, MotorPr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("polar_rail")
+SERVICE_VERSION = "1.1.3"
+HARDWARE_INITIALIZE_TIMEOUT_SECONDS = 15
 
 
 class DisplayRuntime:
@@ -81,23 +83,34 @@ class DisplayRuntime:
         return {"success": True, "message": "Content configuration reloaded"}
 
     async def start(self) -> None:
-        """Keep the web service available while optional hardware initialization completes."""
-        self.ready = False
+        """Configuration is already loaded; Host readiness must not wait for hardware."""
         self.state.error = None
+        self.state.motor_state = "initializing"
         self._initialize_task = asyncio.create_task(self._initialize_hardware(), name="motor-initialize")
+        self.ready = True
+        logger.info("业务服务已就绪 version=%s；硬件连接在后台初始化", SERVICE_VERSION)
+
+    @property
+    def hardware_initializing(self) -> bool:
+        return self._initialize_task is not None and not self._initialize_task.done()
 
     async def _initialize_hardware(self) -> None:
         try:
-            await self.motor.initialize()
+            await asyncio.wait_for(self.motor.initialize(), timeout=HARDWARE_INITIALIZE_TIMEOUT_SECONDS)
+            logger.info("滑轨控制器初始化结束")
+        except TimeoutError:
+            logger.error("滑轨控制器初始化超时；业务页面和标准接口继续可用")
+            self.state.motor_state = "error"
+            self.state.error = "滑轨控制器连接超时"
         except Exception as error:  # The page must remain available when the controller is offline.
             logger.exception("滑轨控制器初始化失败")
             self.state.motor_state = "error"
             self.state.error = "滑轨控制器暂不可用"
         finally:
-            self.ready = True
             await self.publish(self.state.payload())
 
     async def shutdown(self) -> None:
+        self.ready = False
         if self._initialize_task and not self._initialize_task.done():
             self._initialize_task.cancel()
             try:
@@ -119,7 +132,7 @@ class DisplayRuntime:
         return public_wakefusion_actions(self.wakefusion)
 
     def state_for_wakefusion(self) -> dict[str, Any]:
-        active_scene = self.state.target_scene or self.state.current_scene
+        active_scene = self.state.target_scene or self.state.display_scene or self.state.current_scene
         active_action = self.action_for_scene(active_scene)
         if self.last_wakefusion_action_id:
             last_action = next((action for action in self.enabled_actions() if action["id"] == self.last_wakefusion_action_id), None)
@@ -152,6 +165,7 @@ class DisplayRuntime:
             "updatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
             "details": {
                 "motorState": self.state.motor_state,
+                "hardwareInitializing": self.hardware_initializing,
                 "playbackState": self.state.playback_state,
                 "carouselMode": self.state.carousel_mode,
             },
@@ -184,7 +198,7 @@ async def lifespan(_: FastAPI):
     await runtime.shutdown()
 
 
-app = FastAPI(title="Polar Rail Display", lifespan=lifespan)
+app = FastAPI(title="Polar Rail Display", version=SERVICE_VERSION, lifespan=lifespan)
 app.mount("/content", StaticFiles(directory=ROOT / "content"), name="content")
 
 
@@ -202,9 +216,15 @@ def command(request: Request) -> dict[str, str]:
 
 
 async def manual_scene(scene_id: str, request: Request) -> dict[str, Any]:
+    require_hardware_initialized()
     runtime.last_wakefusion_action_id = None
     await runtime.carousel.stop()
     return await runtime.scene.activate_scene(scene_id, command(request))
+
+
+def require_hardware_initialized() -> None:
+    if runtime.hardware_initializing:
+        raise HTTPException(status_code=423, detail="控制器正在连接，请稍后再切换点位")
 
 
 def require_admin(request: Request) -> None:
@@ -253,7 +273,7 @@ async def wakefusion_health(request: Request) -> JSONResponse:
         "ok": True,
         "ready": runtime.ready,
         "appId": runtime.wakefusion["appId"],
-        "version": runtime.wakefusion["version"],
+        "version": SERVICE_VERSION,
     }
     if not runtime.ready:
         payload["message"] = "正在加载业务数据"
@@ -284,6 +304,8 @@ async def run_wakefusion_action(action: dict[str, Any], index: int) -> tuple[int
     handler = action["handler"]
     action_command = {"method": "POST", "path": f"/api/wakefusion/v1/actions/{index}/execute"}
     motion_actions = {"scene", "home", "carousel_start"}
+    if handler in motion_actions and runtime.hardware_initializing:
+        return 423, "application_busy", "控制器正在连接，页面已就绪，请稍后再切换点位"
     if handler in motion_actions and runtime.state.target_scene:
         return 423, "application_busy", "滑轨正在执行前一个动作"
 
@@ -439,6 +461,7 @@ async def display_config() -> dict[str, Any]:
         "coordinateLabel": runtime.app_config.get("coordinateLabel", ""),
         "emblemPath": asset_url(runtime.app_config["emblemPath"]),
         "labels": runtime.app_config.get("labels", {}),
+        "showMascots": runtime.app_config.get("showMascots", False) is True,
         "mascots": {key: asset_url(path) for key, path in runtime.app_config["mascots"].items()},
         "points": [
             {
@@ -463,6 +486,16 @@ async def points() -> list[dict[str, Any]]:
 async def play(request: Request) -> dict[str, Any]:
     runtime.last_wakefusion_action_id = None
     runtime.state.last_command = command(request)
+    if not runtime.state.video_id:
+        # The landing page displays the first visible point, not the hidden home.
+        # Register that media before playing so Pause works even without a rail move.
+        visible = {key: value for key, value in runtime.scenes.items() if value.get("visible", True) and value.get("videoPath")}
+        displayed = runtime.state.target_scene or runtime.state.display_scene or runtime.state.current_scene
+        selected = displayed if displayed in visible else next(iter(visible), None)
+        if selected is None:
+            raise HTTPException(status_code=409, detail="当前没有可播放的展项")
+        runtime.state.display_scene = selected
+        await runtime.media.load(selected)
     await runtime.media.play()
     return {"success": True, "message": "Playback started"}
 
@@ -485,6 +518,7 @@ async def stop(request: Request) -> dict[str, Any]:
 
 @app.api_route("/api/control/home", methods=["GET", "POST"])
 async def home(request: Request) -> dict[str, Any]:
+    require_hardware_initialized()
     runtime.last_wakefusion_action_id = None
     await runtime.carousel.stop()
     return await runtime.scene.go_home(command(request))
@@ -492,6 +526,7 @@ async def home(request: Request) -> dict[str, Any]:
 
 @app.api_route("/api/control/carousel/start", methods=["GET", "POST"])
 async def carousel_start(request: Request) -> dict[str, Any]:
+    require_hardware_initialized()
     runtime.last_wakefusion_action_id = None
     return await runtime.carousel.start(command(request))
 
