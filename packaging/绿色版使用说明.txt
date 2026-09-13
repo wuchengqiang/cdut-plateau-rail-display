@@ -7,7 +7,7 @@
 2. config\points.json：点位名称、视频、背景、海报、玩偶和 positionMm 坐标。
 3. config\machine.json：控制器 IP、端口与 provider。开发预览保持 mock；完成点位校准后改为 tcp。
 4. config\admin.json：管理员密码。
-5. content\：视频、背景、海报及玩偶等素材。
+5. content\：视频、背景、海报及玩偶等素材。绿色包不附带视频；请现场复制视频到 app\runtime\content\videos\，并与 config\points.json 的 videoPath 保持一致。
 
 现场配置完成后，重启程序或管理员登录后自动重载配置。
 未填写 positionMm 的点位不能在真实硬件模式下移动，这是安全保护。

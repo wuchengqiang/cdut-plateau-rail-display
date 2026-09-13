@@ -1,6 +1,12 @@
 export type MediaCommand = { source: string; state: string; revision: number };
 export type MediaTarget = Pick<HTMLVideoElement, 'paused' | 'ended' | 'currentTime' | 'play' | 'pause'>;
 
+export function makeEndedFeedback(video: Pick<HTMLVideoElement, 'ended' | 'duration' | 'currentTime' | 'currentSrc'>, context: { source: string; sessionId: string; revision: number; state: string }) {
+  if (!context.sessionId || context.state !== 'playing' || video.currentSrc !== context.source || !video.ended
+    || !Number.isFinite(video.duration) || video.duration <= 0 || video.currentTime < video.duration - .25) return null;
+  return { sessionId: context.sessionId, revision: context.revision, event: 'ended' as const };
+}
+
 // Only explicit media commands or a source change control the element. Rail updates
 // never seek, pause, reload, or replay it. Retrying play also works after native end.
 export function synchronizeMedia(video: MediaTarget, command: MediaCommand, record: (event: string) => void, failed: (error: unknown) => void): void {

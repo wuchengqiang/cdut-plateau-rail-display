@@ -10,12 +10,13 @@ from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from .config import (
     ROOT,
@@ -25,6 +26,7 @@ from .config import (
     load_configuration,
     load_wakefusion_configuration,
     public_wakefusion_actions,
+    save_presentation_mode,
     save_wakefusion_text_configuration,
     wakefusion_actions_hash,
 )
@@ -33,7 +35,7 @@ from .services import CarouselService, MediaService, MotorProtocolError, MotorPr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("polar_rail")
-SERVICE_VERSION = "1.1.3"
+SERVICE_VERSION = "1.1.5"
 HARDWARE_INITIALIZE_TIMEOUT_SECONDS = 15
 
 
@@ -147,7 +149,7 @@ class DisplayRuntime:
 
         if not self.ready:
             public_state = "starting"
-        elif self.state.error:
+        elif self.state.error or self.state.media_error:
             public_state = "error"
         elif self.state.playback_state == "paused":
             public_state = "paused"
@@ -444,11 +446,31 @@ async def status() -> dict[str, Any]:
     return {**runtime.state.payload(), "availablePointCount": len(visible_point_ids), "pointIds": visible_point_ids}
 
 
+class MediaEventBody(BaseModel):
+    sessionId: str = Field(min_length=32, max_length=32)
+    revision: int = Field(ge=0, strict=True)
+    event: Literal["ended", "error"]
+
+
+class PresentationModeBody(BaseModel):
+    mode: Literal["demo", "compact", "visit"]
+    moveToRestPoint: bool = False
+
+
+@app.post("/api/media/events")
+async def media_event(body: MediaEventBody) -> dict[str, Any]:
+    """Same-origin player feedback, not an action the central controller must call."""
+    result = await runtime.media.report_event(body.sessionId, body.revision, body.event)
+    if body.event == "error" and result.get("accepted"):
+        await runtime.carousel.stop()
+    return result
+
+
 @app.get("/api/display-config")
 async def display_config() -> dict[str, Any]:
     """Expose external display assets so the frontend never binds mascot filenames."""
     def asset_url(path: str) -> str:
-        return "/" + path.replace("\\", "/").lstrip("/")
+        return "/" + path.replace("\\", "/").lstrip("/") if path else ""
 
     return {
         "title": runtime.app_config["title"],
@@ -461,14 +483,16 @@ async def display_config() -> dict[str, Any]:
         "coordinateLabel": runtime.app_config.get("coordinateLabel", ""),
         "emblemPath": asset_url(runtime.app_config["emblemPath"]),
         "labels": runtime.app_config.get("labels", {}),
+        "presentation": runtime.app_config["presentation"],
         "showMascots": runtime.app_config.get("showMascots", False) is True,
         "mascots": {key: asset_url(path) for key, path in runtime.app_config["mascots"].items()},
         "points": [
             {
                 **scene,
-                "videoPath": asset_url(scene["videoPath"]),
-                "posterPath": asset_url(scene["posterPath"]),
-                "backgroundPath": asset_url(scene["backgroundPath"]),
+                "videoPath": asset_url(scene.get("videoPath", "")),
+                "posterPath": asset_url(scene.get("posterPath", "")),
+                "backgroundPath": asset_url(scene.get("backgroundPath", "")),
+                "imagePath": asset_url(scene.get("imagePath") or scene.get("backgroundPath", "")),
             }
             for scene in runtime.scenes.values()
             if scene.get("visible", True)
@@ -489,10 +513,10 @@ async def play(request: Request) -> dict[str, Any]:
     if not runtime.state.video_id:
         # The landing page displays the first visible point, not the hidden home.
         # Register that media before playing so Pause works even without a rail move.
-        visible = {key: value for key, value in runtime.scenes.items() if value.get("visible", True) and value.get("videoPath")}
+        visible = {key: value for key, value in runtime.scenes.items() if value.get("visible", True)}
         displayed = runtime.state.target_scene or runtime.state.display_scene or runtime.state.current_scene
         selected = displayed if displayed in visible else next(iter(visible), None)
-        if selected is None:
+        if selected is None or not runtime.scene.has_video(selected):
             raise HTTPException(status_code=409, detail="当前没有可播放的展项")
         runtime.state.display_scene = selected
         await runtime.media.load(selected)
@@ -537,6 +561,28 @@ async def carousel_stop(request: Request) -> dict[str, Any]:
     return await runtime.carousel.stop(command(request))
 
 
+@app.post("/api/control/emergency-stop")
+async def emergency_stop(request: Request) -> dict[str, Any]:
+    """Vendor STOP command: a soft stop, not a servo power cut or safety circuit."""
+    runtime.last_wakefusion_action_id = None
+    stop_command = command(request)
+    await runtime.carousel.stop(stop_command)
+    return await runtime.scene.emergency_stop(stop_command)
+
+
+async def restore_demo_content_after_rest(move_task: asyncio.Task[None] | None, rest_point: str, content_point: str) -> None:
+    """Keep the one configured demo video on screen after the rail reaches its visual rest point."""
+    if move_task and not move_task.done():
+        try:
+            await asyncio.shield(move_task)
+        except (asyncio.CancelledError, Exception):
+            return
+    if runtime.state.current_scene != rest_point or runtime.state.target_scene or runtime.state.carousel_mode:
+        return
+    await runtime.scene.present(content_point)
+    await runtime.publish(runtime.state.payload())
+
+
 @app.post("/api/admin/login")
 async def admin_login(request: Request) -> JSONResponse:
     body = await request.json()
@@ -552,6 +598,42 @@ async def admin_login(request: Request) -> JSONResponse:
 async def reload_content(request: Request) -> dict[str, Any]:
     require_admin(request)
     return await runtime.reload_content()
+
+
+@app.get("/api/admin/presentation")
+async def admin_presentation(request: Request) -> dict[str, Any]:
+    require_admin(request)
+    return {"success": True, "presentation": runtime.app_config["presentation"]}
+
+
+@app.put("/api/admin/presentation")
+async def save_admin_presentation(body: PresentationModeBody, request: Request) -> JSONResponse:
+    require_admin(request)
+    if body.moveToRestPoint and body.mode != "demo":
+        return JSONResponse({"success": False, "error": "INVALID_REQUEST", "message": "只有明日演示模式可前往演示点"}, status_code=400)
+    if body.moveToRestPoint:
+        require_hardware_initialized()
+    try:
+        presentation = save_presentation_mode(body.mode)
+        await runtime.reload_content()
+    except ValueError as error:
+        return JSONResponse({"success": False, "error": "PRESENTATION_INVALID", "message": str(error)}, status_code=400)
+    response: dict[str, Any] = {"success": True, "presentation": presentation, "moved": False}
+    if body.moveToRestPoint:
+        await runtime.carousel.stop({"method": "PUT", "path": "/api/admin/presentation"})
+        rest_point = presentation["demoRestPointId"]
+        move = await runtime.scene.activate_scene(rest_point, {"method": "PUT", "path": "/api/admin/presentation/rest-point"})
+        if not move.get("success"):
+            return JSONResponse({"success": False, "error": move.get("error", "MOVE_NOT_ACCEPTED"), "message": move.get("message", "演示点移动未受理")}, status_code=409)
+        response["moved"] = bool(move.get("accepted"))
+        response["restPointId"] = rest_point
+        restore_task = runtime.scene._task
+        asyncio.create_task(
+            restore_demo_content_after_rest(restore_task, rest_point, presentation["demoContentPointId"]),
+            name="restore-demo-content",
+        )
+    await runtime.publish(runtime.state.payload())
+    return JSONResponse(response)
 
 
 def wakefusion_configuration_is_busy() -> bool:

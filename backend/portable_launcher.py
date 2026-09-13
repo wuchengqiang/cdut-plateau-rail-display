@@ -30,9 +30,9 @@ def find_edge() -> Path:
     raise RuntimeError("Microsoft Edge was not found. Install Edge before standalone launch.")
 
 
-def kiosk_command(edge: Path, root: Path) -> list[str]:
+def kiosk_command(edge: Path, root: Path, port: int = 8000) -> list[str]:
     # An app-owned profile prevents a normal Edge session from swallowing kiosk flags.
-    return [str(edge), "--kiosk", "http://127.0.0.1:8000/", "--edge-kiosk-type=fullscreen",
+    return [str(edge), "--kiosk", f"http://127.0.0.1:{port}/", "--edge-kiosk-type=fullscreen",
             "--no-first-run", "--autoplay-policy=no-user-gesture-required",
             f"--user-data-dir={root / 'browser-profile'}"]
 
@@ -47,16 +47,30 @@ def main() -> int:
     root = external_root()
     os.environ["RAIL_DISPLAY_ROOT"] = str(root)
 
-    # Bind before importing the runtime or starting any hardware connection. Never
-    # reuse an unknown service on port 8000 (it may belong to Host with another token).
-    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    from app.remote_control import ListenerRouter, load_network_settings
+
+    listeners: list[socket.socket] = []
     try:
-        listener.bind(("127.0.0.1", 8000))
-        listener.listen(128)
-        listener.setblocking(False)
-    except OSError:
-        listener.close()
-        print("Port 8000 is already in use. Close Host or the previous standalone service, then retry.", flush=True)
+        local_host, local_port, remote = load_network_settings(root)
+        endpoints = [(local_host, local_port)] + ([(remote.host, remote.port)] if remote.enabled else [])
+        # Reserve both ports before any hardware initialization. Never reuse an
+        # unknown process, or fall back to an unprotected shared listener.
+        for host, port in endpoints:
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listeners.append(listener)
+            if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+                listener.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            try:
+                listener.bind((host, port))
+            except OSError:
+                print(f"Port {port} is already in use or cannot bind to {host}. Close the conflicting service or check the configured address.", flush=True)
+                raise
+            listener.listen(128)
+            listener.setblocking(False)
+    except Exception as error:
+        for listener in listeners:
+            listener.close()
+        print(f"Network startup failed: {error}", flush=True)
         return 1
 
     browser: subprocess.Popen | None = None
@@ -68,7 +82,13 @@ def main() -> int:
         import uvicorn
         from app.main import app
 
-        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=8000, log_level="info"))
+        # One runtime/lifespan, two separate sockets. Remote callers never reach
+        # the local page/admin/Host routes, even when claiming localhost headers.
+        application = ListenerRouter(app, local_port, remote)
+        server = uvicorn.Server(uvicorn.Config(application, host=local_host, port=local_port, log_level="info", proxy_headers=False))
+        print(f"Local page and Host API: http://127.0.0.1:{local_port}/", flush=True)
+        if remote.enabled:
+            print(f"Protected central-control API: {remote.host}:{remote.port}; key file: config/remote-control.key", flush=True)
 
         def supervise_browser() -> None:
             nonlocal browser
@@ -82,7 +102,7 @@ def main() -> int:
                     return
             try:
                 assert edge is not None
-                browser = subprocess.Popen(kiosk_command(edge, root))
+                browser = subprocess.Popen(kiosk_command(edge, root, local_port))
                 print("Standalone fullscreen opened. Alt+F4 closes the page and stops this service.", flush=True)
                 while not finished.wait(.2):
                     if browser.poll() is not None:
@@ -95,7 +115,7 @@ def main() -> int:
         if edge:
             worker = threading.Thread(target=supervise_browser, name="standalone-browser", daemon=True)
             worker.start()
-        server.run(sockets=[listener])
+        server.run(sockets=listeners)
         if failed:
             print(failed[0], flush=True)
             return 1
@@ -112,7 +132,8 @@ def main() -> int:
             subprocess.run(["taskkill", "/PID", str(browser.pid), "/T", "/F"],
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            creationflags=subprocess.CREATE_NO_WINDOW, timeout=10)
-        listener.close()
+        for listener in listeners:
+            listener.close()
 
 
 if __name__ == "__main__":

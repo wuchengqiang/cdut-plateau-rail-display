@@ -93,7 +93,7 @@ async def main():
         assert provider._socket is None
         controller.mode = 'normal'
         provider.move_timeout = .5
-        scenes = {'p01': {'motorPosition': 'p01'}}
+        scenes = {'p01': {'motorPosition': 'p01', 'videoAvailable': True}}
         service = SceneService(state, scenes, provider, MediaService(state, publish), publish)
         await service.activate_scene('p01', {'method': 'TEST', 'path': '/'})
         await asyncio.sleep(.01)

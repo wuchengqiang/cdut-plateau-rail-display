@@ -18,7 +18,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 
 
-def request(url: str, method: str = "GET", body: dict[str, str] | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], dict[str, Any]]:
+def request(url: str, method: str = "GET", body: dict[str, Any] | None = None, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], dict[str, Any]]:
     data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body else None
     request_headers = {"Accept": "application/json", **(headers or {})}
     if data:
@@ -65,10 +65,18 @@ def main() -> None:
     shutil.copytree(ROOT.parent / "config", test_root / "config")
     shutil.copytree(ROOT / "static", test_root / "backend" / "static")
     (test_root / "content").mkdir()
+    # Contract fixture only: presence selects video mode; this test does not decode media.
+    (test_root / "content" / "videos").mkdir()
+    (test_root / "content" / "videos" / "p01.mp4").write_bytes(b"contract-media-fixture")
     machine_path = test_root / "config" / "machine.json"
     machine = json.loads(machine_path.read_text(encoding="utf-8"))
     machine["provider"] = "mock"
+    machine["mockMoveDurationMs"] = 40
     machine_path.write_text(json.dumps(machine), encoding="utf-8")
+    app_path = test_root / "config" / "app.json"
+    app_config = json.loads(app_path.read_text(encoding="utf-8"))
+    app_config['carouselDwellSeconds'] = .2
+    app_path.write_text(json.dumps(app_config), encoding='utf-8')
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
         cwd=ROOT,
@@ -92,7 +100,7 @@ def main() -> None:
         assert header(health_headers, "Cache-Control") == "no-store"
         assert header(health_headers, "Content-Type").startswith("application/json; charset=utf-8")
         assert health["appId"] == "cdut-slider-screen"
-        assert health["version"] == "1.1.3"
+        assert health["version"] == "1.1.5"
 
         status_code, _, status = request(f"{base_url}/api/wakefusion/v1/status", headers=auth_headers)
         assert status_code == 200 and {"state", "playing", "updatedAt", "actionsHash"}.issubset(status)
@@ -167,6 +175,44 @@ def main() -> None:
         assert login_code == 200 and config_api_code == 200
         assert config_api["safeToSave"] is False and len(config_api["actions"]) == 10
         assert config_api["actions"][0]["index"] == 0
+
+        presentation_code, _, presentation = request(f"{base_url}/api/admin/presentation", headers={"Cookie": admin_cookie})
+        assert presentation_code == 200 and presentation['presentation']['mode'] == 'demo'
+        saved_mode_code, _, saved_mode = request(
+            f"{base_url}/api/admin/presentation", "PUT", {"mode": "compact", "moveToRestPoint": False}, {"Cookie": admin_cookie}
+        )
+        assert saved_mode_code == 200 and saved_mode['presentation']['mode'] == 'compact' and saved_mode['moved'] is False
+        _, _, display_after_mode = request(f'{base_url}/api/display-config')
+        assert display_after_mode['presentation']['mode'] == 'compact'
+        assert request(f"{base_url}/api/admin/presentation", "PUT", {"mode": "demo", "moveToRestPoint": False}, {"Cookie": admin_cookie})[0] == 200
+
+        # The central controller's unchanged HTTP endpoints drive the new policy.
+        _, _, display = request(f'{base_url}/api/display-config')
+        assert [point['videoAvailable'] for point in display['points']] == [True, False, False, False]
+        assert request(f'{base_url}/api/control/carousel/start', 'POST')[2]['accepted'] is True
+        assert request(f'{base_url}/api/control/carousel/start', 'POST')[2]['accepted'] is False
+        time.sleep(.3)  # Longer than the fallback dwell: a video must not be skipped.
+        _, _, playback = request(f'{base_url}/api/status')
+        assert playback['currentPointId'] == 'p01' and playback['carouselMode'] is True
+        ended = {'sessionId': playback['mediaSessionId'], 'revision': playback['playbackRevision'], 'event': 'ended'}
+        assert request(f'{base_url}/api/media/events', 'POST', {**ended, 'event': 'move'})[0] == 422
+        assert request(f'{base_url}/api/media/events', 'POST', {**ended, 'sessionId': '0' * 32})[2]['accepted'] is False
+        assert request(f'{base_url}/api/media/events', 'POST', ended)[2]['accepted'] is True
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            _, _, playback = request(f'{base_url}/api/status')
+            if playback['currentPointId'] == 'p02' and playback['targetPointId'] is None:
+                break
+            time.sleep(.01)
+        else:
+            raise AssertionError('Media end did not advance the mock tour to point 2')
+        assert playback['playbackState'] == 'showing' and playback['videoId'] is None
+        assert request(f'{base_url}/api/media/events', 'POST', ended)[2]['accepted'] is False
+        assert request(f'{base_url}/api/control/carousel/stop', 'POST')[2]['accepted'] is True
+        time.sleep(.3)
+        _, _, stopped_tour = request(f'{base_url}/api/status')
+        assert stopped_tour['currentPointId'] == 'p02' and stopped_tour['carouselMode'] is False
+        assert request(f'{base_url}/api/control/play', 'POST')[0] == 409  # Do not jump back to point 1 from an image-only point.
 
         manifest = json.loads((ROOT.parent / "wakefusion" / "app.json").read_text(encoding="utf-8"))
         assert manifest["type"] == "service"

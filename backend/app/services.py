@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import socket
+from uuid import uuid4
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -37,6 +38,8 @@ class SystemState:
     motor_state: str = "idle"
     playback_state: str = "idle"
     playback_revision: int = 0
+    media_session_id: str | None = None
+    media_error: str | None = None
     carousel_mode: bool = False
     carousel_direction: str = "forward"
     video_id: str | None = None
@@ -53,6 +56,8 @@ class SystemState:
             "motorState": self.motor_state,
             "playbackState": self.playback_state,
             "playbackRevision": self.playback_revision,
+            "mediaSessionId": self.media_session_id,
+            "mediaError": self.media_error,
             "carouselMode": self.carousel_mode,
             "carouselDirection": self.carousel_direction,
             "videoId": self.video_id,
@@ -331,13 +336,18 @@ class MediaService:
     def __init__(self, state: SystemState, publish: Publish) -> None:
         self.state, self.publish = state, publish
 
-    async def load(self, scene_id: str) -> None:
+    async def load(self, scene_id: str, has_video: bool = True) -> None:
+        self.state.media_session_id = uuid4().hex
+        self.state.media_error = None
         self.state.playback_revision += 1
-        self.state.playback_state = "loading"
-        self.state.video_id = f"scene-{scene_id}-video"
+        self.state.playback_state = "loading" if has_video else "showing"
+        self.state.video_id = f"scene-{scene_id}-video" if has_video else None
         await self.publish(self.state.payload())
 
     async def play(self) -> None:
+        if not self.state.video_id:
+            return
+        self.state.media_error = None
         self.state.playback_revision += 1
         self.state.playback_state = "playing"
         await self.publish(self.state.payload())
@@ -353,12 +363,40 @@ class MediaService:
         self.state.playback_state = "stopped"
         await self.publish(self.state.payload())
 
+    async def report_event(self, session_id: str, revision: int, event: str) -> dict[str, Any]:
+        # A delayed event from a previous point, replay, pause or service process
+        # must never complete the current tour item. Reports are idempotent.
+        if (session_id != self.state.media_session_id or revision != self.state.playback_revision
+                or not self.state.video_id or self.state.playback_state != "playing"):
+            return {"success": True, "accepted": False}
+        if event == "ended":
+            self.state.playback_state = "ended"
+        elif event == "error":
+            self.state.media_error = "视频读取或解码失败，请检查文件和播放诊断"
+            self.state.playback_state = "error"
+        else:
+            return {"success": False, "accepted": False, "error": "INVALID_MEDIA_EVENT"}
+        await self.publish(self.state.payload())
+        return {"success": True, "accepted": True}
+
 
 class SceneService:
     def __init__(self, state: SystemState, scenes: dict[str, dict[str, Any]], motor: MotorProvider, media: MediaService, publish: Publish) -> None:
         self.state, self.scenes, self.motor, self.media, self.publish = state, scenes, motor, media, publish
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+        self._emergency_stop_in_progress = False
+
+    def has_video(self, scene_id: str) -> bool:
+        scene = self.scenes[scene_id]
+        return scene.get("contentType", "video") == "video" and bool(scene.get("videoAvailable", scene.get("videoPath")))
+
+    async def present(self, scene_id: str) -> None:
+        await self.media.stop()
+        self.state.display_scene = scene_id
+        await self.media.load(scene_id, self.has_video(scene_id))
+        if self.state.video_id:
+            await self.media.play()
 
     async def activate_scene(self, scene_id: str, command: dict[str, str]) -> dict[str, Any]:
         if scene_id not in self.scenes:
@@ -377,12 +415,9 @@ class SceneService:
 
     async def _run_scene(self, scene_id: str) -> None:
         try:
-            await self.media.stop()
             # The displayed content is independent of the last confirmed rail position.
             # Start once on selection; arrival must not restart a paused/stopped video.
-            self.state.display_scene = scene_id
-            await self.media.load(scene_id)
-            await self.media.play()
+            await self.present(scene_id)
             moved = await self.motor.move_to(self.scenes[scene_id]["motorPosition"])
             if not moved:
                 raise RuntimeError("电机未到位")
@@ -391,7 +426,8 @@ class SceneService:
             await self.publish(self.state.payload())
         except asyncio.CancelledError:
             logger.info("场景任务被新命令取消")
-            await self.motor.stop()
+            if not self._emergency_stop_in_progress:
+                await self.motor.stop()
             raise
         except Exception as error:  # pragma: no cover - defensive hardware boundary
             logger.exception("场景切换失败")
@@ -412,6 +448,37 @@ class SceneService:
             await self.publish(self.state.payload())
         return {"success": True, "accepted": True, "message": "Home accepted"}
 
+    async def emergency_stop(self, command: dict[str, str]) -> dict[str, Any]:
+        """Send the vendor-documented STOP once, after cancelling our in-flight MOVE."""
+        task: asyncio.Task[None] | None
+        async with self._lock:
+            self._emergency_stop_in_progress = True
+            task = self._task
+            if task and not task.done():
+                task.cancel()
+            self.state.target_scene = None
+            self.state.last_command = command
+            await self.publish(self.state.payload())
+        try:
+            if task and not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+            await self.motor.stop()
+            self.state.error = "已发送 STOP 软停；请确认滑轨实际位置后再继续移动"
+            await self.publish(self.state.payload())
+            return {
+                "success": True,
+                "accepted": True,
+                "message": "已发送 STOP 软停。该协议不会切断伺服使能，请确认实际位置。",
+            }
+        except Exception as error:
+            logger.exception("STOP 软停命令失败")
+            self.state.motor_state = "error"
+            self.state.error = f"STOP 软停命令失败：{error}"
+            await self.publish(self.state.payload())
+            return {"success": False, "accepted": False, "error": "STOP_FAILED", "message": self.state.error}
+        finally:
+            self._emergency_stop_in_progress = False
+
     async def _run_home(self) -> None:
         try:
             await self.media.stop()
@@ -428,41 +495,67 @@ class CarouselService:
     def __init__(self, state: SystemState, scene_service: SceneService, app_config: dict[str, Any], publish: Publish) -> None:
         self.state, self.scene_service, self.app_config, self.publish = state, scene_service, app_config, publish
         self._task: asyncio.Task[None] | None = None
+        self._lock = asyncio.Lock()
 
     async def start(self, command: dict[str, str]) -> dict[str, Any]:
-        if self.state.carousel_mode:
-            return {"success": True, "accepted": False, "message": "Carousel already running"}
-        self.state.carousel_mode = True
-        self.state.last_command = command
-        self._task = asyncio.create_task(self._run(), name="carousel")
-        await self.publish(self.state.payload())
-        return {"success": True, "accepted": True, "message": "Carousel started"}
+        async with self._lock:
+            if self.state.carousel_mode:
+                return {"success": True, "accepted": False, "message": "Carousel already running"}
+            if self.state.target_scene or (self.scene_service._task and not self.scene_service._task.done()):
+                return {"success": False, "error": "MOTOR_BUSY", "message": "请等待当前移动完成"}
+            if self.state.motor_state == "error":
+                return {"success": False, "error": "MOTOR_ERROR", "message": "请先排查滑轨异常并确认点位"}
+            if not self._ordered_scene_ids():
+                return {"success": False, "error": "NO_POINTS", "message": "没有可巡展点位"}
+            self.state.carousel_mode = True
+            self.state.carousel_direction = "forward"
+            self.state.last_command = command
+            self._task = asyncio.create_task(self._run(), name="carousel")
+            await self.publish(self.state.payload())
+            return {"success": True, "accepted": True, "message": "Carousel started"}
 
     async def stop(self, command: dict[str, str] | None = None) -> dict[str, Any]:
-        if not self.state.carousel_mode:
-            return {"success": True, "accepted": False, "message": "Carousel already stopped"}
-        self.state.carousel_mode = False
-        if command:
-            self.state.last_command = command
-        if self._task and self._task is not asyncio.current_task():
-            self._task.cancel()
-        await self.publish(self.state.payload())
-        return {"success": True, "accepted": True, "message": "Carousel stopped"}
+        async with self._lock:
+            was_running = self.state.carousel_mode
+            self.state.carousel_mode = False
+            if command:
+                self.state.last_command = command
+            if self._task and self._task is not asyncio.current_task():
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+            await self.publish(self.state.payload())
+            return {"success": True, "accepted": was_running, "message": "Carousel stopped"}
 
     def _ordered_scene_ids(self) -> list[str]:
         visible_scenes = ((scene_id, scene) for scene_id, scene in self.scene_service.scenes.items() if scene.get("visible", True))
         return [scene_id for scene_id, _ in sorted(visible_scenes, key=lambda item: (item[1].get("order", 0), item[0]))]
 
-    def _next_scene(self) -> str:
+    def _next_scene(self) -> str | None:
         scene_ids = self._ordered_scene_ids()
         if len(scene_ids) == 1:
+            if self.app_config.get("tourMode") == "returnHome" and self.state.current_scene in scene_ids:
+                return None
             return scene_ids[0]
-        current = self.state.current_scene if self.state.current_scene in scene_ids else scene_ids[0]
+        if self.state.current_scene not in scene_ids:
+            return scene_ids[0]
+        current = self.state.current_scene
         index = scene_ids.index(current)
         if self.app_config.get("tourMode") == "loop":
             self.state.carousel_direction = "forward"
             return scene_ids[(index + 1) % len(scene_ids)]
         direction = self.state.carousel_direction
+        if self.app_config.get("tourMode") == "returnHome":
+            if direction == "forward":
+                if index < len(scene_ids) - 1:
+                    return scene_ids[index + 1]
+                self.state.carousel_direction = "backward"
+                return scene_ids[index - 1] if index > 0 else None
+            if index > 0:
+                return scene_ids[index - 1]
+            return None
         if index >= len(scene_ids) - 1:
             direction = "backward"
         elif index <= 0:
@@ -472,14 +565,66 @@ class CarouselService:
 
     async def _run(self) -> None:
         try:
+            scene_ids = self._ordered_scene_ids()
+            scene_id = self.state.current_scene if self.state.current_scene in scene_ids else scene_ids[0]
+            first = True
             while self.state.carousel_mode:
-                scene_id = self._next_scene()
-                result = await self.scene_service.activate_scene(scene_id, {"method": "SYSTEM", "path": "/carousel"})
-                if result.get("accepted"):
-                    while self.state.target_scene is not None and self.state.carousel_mode:
-                        await asyncio.sleep(0.1)
-                    await asyncio.sleep(self.app_config["carouselDwellSeconds"])
+                if self.state.current_scene == scene_id and self.state.motor_state == "arrived":
+                    # Keep an already playing video on Start; one-point tours replay
+                    # their media on later passes without issuing another MOVE.
+                    if not (first and self.state.display_scene == scene_id and self.state.playback_state in {"playing", "paused", "showing"}):
+                        await self.scene_service.present(scene_id)
+                    elif self.state.playback_state == "paused":
+                        await self.scene_service.media.play()
                 else:
-                    await asyncio.sleep(0.2)
+                    result = await self.scene_service.activate_scene(scene_id, {"method": "SYSTEM", "path": "/carousel"})
+                    if not result.get("accepted"):
+                        raise RuntimeError(result.get("message", "巡展点位未受理"))
+                    # Cancel only the scheduler, never an in-flight physical move.
+                    await asyncio.shield(self.scene_service._task)
+                self._check_arrival(scene_id)
+                await self._wait_content(scene_id)
+                next_scene = self._next_scene()
+                if next_scene is None and self.app_config.get("tourMode") == "returnHome":
+                    result = await self.scene_service.go_home({"method": "SYSTEM", "path": "/carousel/home"})
+                    if not result.get("accepted"):
+                        raise RuntimeError("巡展回原点未受理")
+                    await asyncio.shield(self.scene_service._task)
+                    if self.state.current_scene != self.scene_service.motor.machine["homePosition"] or self.state.motor_state != "arrived":
+                        raise RuntimeError(self.state.error or "原点未确认到达")
+                    return
+                if next_scene is None:
+                    raise RuntimeError("巡展未找到下一点位")
+                scene_id = next_scene
+                first = False
         except asyncio.CancelledError:
             raise
+        except Exception as error:
+            logger.exception("巡展已中止，不会自动重发移动指令")
+            if not self.state.error and not self.state.media_error:
+                self.state.error = str(error)
+        finally:
+            self.state.carousel_mode = False
+            await self.publish(self.state.payload())
+
+    def _check_arrival(self, scene_id: str) -> None:
+        if self.state.motor_state != "arrived" or self.state.current_scene != scene_id or self.state.target_scene:
+            raise RuntimeError(self.state.error or "点位未确认到达，巡展中止")
+
+    async def _wait_content(self, scene_id: str) -> None:
+        # The dwell clock starts here, strictly after the movement task completed.
+        deadline = asyncio.get_running_loop().time() + self.app_config["carouselDwellSeconds"]
+        has_video = self.scene_service.has_video(scene_id)
+        while self.state.carousel_mode:
+            self._check_arrival(scene_id)
+            if self.state.display_scene != scene_id:
+                raise RuntimeError("展项已改变，巡展中止")
+            if self.state.media_error:
+                raise RuntimeError(self.state.media_error)
+            if has_video:
+                if self.state.playback_state == "ended":
+                    return
+                # Pause, Stop, blocked autoplay and a closed page are not completion.
+            elif asyncio.get_running_loop().time() >= deadline:
+                return
+            await asyncio.sleep(0.05)

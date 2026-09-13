@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { synchronizeMedia, readMediaMetrics } from './src/media-controller.ts';
+import { makeEndedFeedback, synchronizeMedia, readMediaMetrics } from './src/media-controller.ts';
 
 const events = [];
 const failure = (error) => { throw error; };
@@ -33,6 +33,20 @@ assert.equal(playCalls, 3);
 synchronizeMedia(video, { ...command, state: 'stopped', revision: 7 }, () => {}, failure);
 assert.equal(video.currentTime, 0);
 assert.equal(video.paused, true);
+// A confirmed end must retain the last frame while waiting for physical arrival.
+const beforeEnd = { playCalls, pauseCalls, position: video.currentTime };
+synchronizeMedia(video, { ...command, state: 'ended', revision: 8 }, () => {}, failure);
+assert.deepEqual({ playCalls, pauseCalls, position: video.currentTime }, beforeEnd);
+
+const feedbackContext = { source: 'http://127.0.0.1/content/videos/p01.mp4', sessionId: 'a'.repeat(32), revision: 10, state: 'playing' };
+const endedVideo = { currentSrc: feedbackContext.source, ended: true, duration: 141.31, currentTime: 141.31 };
+assert.deepEqual(makeEndedFeedback(endedVideo, feedbackContext), { sessionId: feedbackContext.sessionId, revision: 10, event: 'ended' });
+for (const override of [{ ended: false }, { duration: NaN }, { currentTime: 10 }, { currentSrc: 'old-video' }]) {
+  assert.equal(makeEndedFeedback({ ...endedVideo, ...override }, feedbackContext), null);
+}
+for (const override of [{ sessionId: '' }, { state: 'paused' }, { state: 'stopped' }, { state: 'ended' }]) {
+  assert.equal(makeEndedFeedback(endedVideo, { ...feedbackContext, ...override }), null);
+}
 
 const metrics = readMediaMetrics({ ...video, videoWidth: 2126, videoHeight: 3840, duration: 141.31,
   currentTime: 20, readyState: 4, error: null,

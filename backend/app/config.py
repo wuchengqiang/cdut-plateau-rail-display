@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import hashlib
 import re
@@ -42,6 +43,43 @@ IPV4_PATTERN = re.compile(
     r"(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}(?::\d{1,5})?(?!\d)"
 )
 ACTION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+PRESENTATION_MODES = frozenset({"demo", "compact", "visit"})
+
+
+def normalize_presentation_configuration(raw: Any) -> dict[str, str]:
+    """Keep the public presentation controls deliberately small and predictable."""
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("presentation 必须是对象")
+    mode = raw.get("mode", "visit")
+    if mode not in PRESENTATION_MODES:
+        raise ValueError("presentation.mode 必须为 demo、compact 或 visit")
+    rest_point = raw.get("demoRestPointId", "p04")
+    if not isinstance(rest_point, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", rest_point):
+        raise ValueError("presentation.demoRestPointId 必须是有效的点位 id")
+    content_point = raw.get("demoContentPointId", "p01")
+    if not isinstance(content_point, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", content_point):
+        raise ValueError("presentation.demoContentPointId 必须是有效的点位 id")
+    return {"mode": mode, "demoRestPointId": rest_point, "demoContentPointId": content_point}
+
+
+def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
+    temporary_path = path.with_suffix(path.suffix + ".tmp")
+    with temporary_path.open("w", encoding="utf-8", newline="\n") as file:
+        json.dump(value, file, ensure_ascii=False, indent=2)
+        file.write("\n")
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary_path, path)
+
+
+def save_presentation_mode(mode: str) -> dict[str, str]:
+    """Persist the operator's chosen display preset without altering other app text."""
+    current = read_json("config/app.json")
+    presentation = normalize_presentation_configuration({**current.get("presentation", {}), "mode": mode})
+    _write_json_atomic(ROOT / "config" / "app.json", {**current, "presentation": presentation})
+    return presentation
 
 
 def _wakefusion_public_text(value: Any, maximum: int, label: str, *, required: bool) -> str:
@@ -185,19 +223,17 @@ def save_wakefusion_text_configuration(updates: list[dict[str, Any]]) -> dict[st
     normalized = normalize_wakefusion_configuration(persisted)
     for action in normalized["actions"]:
         action.pop("_position", None)
-    config_path = ROOT / "config" / "wakefusion.json"
-    temporary_path = config_path.with_suffix(".json.tmp")
-    with temporary_path.open("w", encoding="utf-8", newline="\n") as file:
-        json.dump(normalized, file, ensure_ascii=False, indent=2)
-        file.write("\n")
-        file.flush()
-        os.fsync(file.fileno())
-    os.replace(temporary_path, config_path)
+    _write_json_atomic(ROOT / "config" / "wakefusion.json", normalized)
     return normalize_wakefusion_configuration(normalized)
 
 
 def load_configuration() -> tuple[dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
     app = read_json("config/app.json")
+    dwell = app.get("carouselDwellSeconds", 12)
+    if isinstance(dwell, bool) or not isinstance(dwell, (int, float)) or not math.isfinite(dwell) or dwell <= 0:
+        raise ValueError("carouselDwellSeconds 必须是大于 0 的秒数")
+    presentation = normalize_presentation_configuration(app.get("presentation"))
+    app = {**app, "carouselDwellSeconds": dwell, "presentation": presentation}
     point_config = read_json("config/points.json")
     machine = read_json("config/machine.json")
     points = [point for point in point_config["points"] if point.get("enabled", True)]
@@ -215,13 +251,31 @@ def load_configuration() -> tuple[dict[str, Any], dict[str, dict[str, Any]], dic
         point_id = str(point["id"])
         if "positionMm" not in point:
             raise ValueError(f"点位 {point_id} 缺少 positionMm")
-        configured[point_id] = {**point, "id": point_id, "motorPosition": point_id}
+        content_type = point.get("contentType", "video")
+        if content_type not in {"video", "imageText"}:
+            raise ValueError(f"点位 {point_id} 的 contentType 必须为 video 或 imageText")
+        video_path = str(point.get("videoPath") or "").replace("\\", "/")
+        video_file = (ROOT / video_path.lstrip("/")).resolve()
+        has_video = bool(video_path) and content_type == "video" and video_file.is_relative_to((ROOT / "content").resolve()) and video_file.is_file()
+        configured[point_id] = {
+            **point, "id": point_id, "motorPosition": point_id,
+            "contentType": content_type, "videoPath": video_path, "videoAvailable": has_video,
+        }
         raw_position = point["positionMm"]
         positions[point_id] = None if raw_position is None else float(raw_position)
 
     home_point_id = str(point_config.get("homePointId", point_ids[0]))
     if home_point_id not in configured:
         raise ValueError("homePointId 必须是已启用点位")
+    rest_point_id = presentation["demoRestPointId"]
+    if rest_point_id not in configured or not configured[rest_point_id].get("visible", True):
+        raise ValueError("presentation.demoRestPointId 必须是已启用的可见点位")
+    content_point_id = presentation["demoContentPointId"]
+    if content_point_id not in configured or not configured[content_point_id].get("visible", True):
+        raise ValueError("presentation.demoContentPointId 必须是已启用的可见点位")
+    tour_mode = point_config.get("tourMode", "pingPong")
+    if tour_mode not in {"pingPong", "loop", "returnHome"}:
+        raise ValueError("tourMode 必须为 pingPong、loop 或 returnHome")
     machine = {**machine, "homePosition": home_point_id, "positionsMm": positions}
-    app = {**app, "tourMode": point_config.get("tourMode", "pingPong")}
+    app = {**app, "tourMode": tour_mode}
     return app, configured, machine

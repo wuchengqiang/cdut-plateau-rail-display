@@ -33,7 +33,7 @@ async def main():
     state = SystemState(current_scene='p00')
     motor = ControlledMotor(state, publish)
     media = MediaService(state, publish)
-    scenes = {p: {'motorPosition': p} for p in ('p00', 'p01', 'p02')}
+    scenes = {p: {'motorPosition': p, 'videoPath': f'content/videos/{p}.mp4'} for p in ('p00', 'p01', 'p02')}
     service = SceneService(state, scenes, motor, media, publish)
     await motor.initialize()
     await service.activate_scene('p01', {'method': 'TEST', 'path': '/'})

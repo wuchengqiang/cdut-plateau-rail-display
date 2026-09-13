@@ -23,12 +23,26 @@ def main():
     source = Path(sys.argv[1]).resolve()
     silent = len(sys.argv) > 2 and sys.argv[2] == 'silent'
     commands = []
-    with socket.socket() as probe:
-        if probe.connect_ex(('127.0.0.1', 8000)) == 0:
-            raise RuntimeError('Port 8000 occupied; existing process left untouched')
+    probes = [socket.socket(), socket.socket()]
+    for probe in probes:
+        probe.bind(('127.0.0.1', 0))
+    local_port, remote_port = [probe.getsockname()[1] for probe in probes]
+    for probe in probes:
+        probe.close()
     machine = json.loads((source / 'runtime/config/machine.json').read_text('utf-8'))
     assert machine['provider'] == 'udp'
     assert machine['network']['host'] == '127.0.0.1' and machine['network']['port'] == 53500
+    assert not (source / 'runtime/config/remote-control.key').exists(), 'Generic package must not include real credentials'
+    source_app = json.loads((source / 'runtime/config/app.json').read_text('utf-8'))
+    source_remote = json.loads((source / 'runtime/config/remote-control.json').read_text('utf-8'))
+    assert (source_app['apiHost'], source_app['apiPort']) == ('127.0.0.1', 8000)
+    assert (source_remote['host'], source_remote['port'], source_remote['enabled']) == ('0.0.0.0', 8001, True)
+    video_suffixes = {'.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv'}
+    assert not [
+        path
+        for path in (source / 'runtime' / 'content').rglob('*')
+        if path.is_file() and path.suffix.lower() in video_suffixes
+    ], 'Generic package must not include video files'
 
     class Controller(socketserver.BaseRequestHandler):
         def handle(self):
@@ -47,6 +61,15 @@ def main():
     with tempfile.TemporaryDirectory(prefix='udp-release-', dir=project / 'tmp') as directory, socketserver.UDPServer(('127.0.0.1', 0), Controller) as server:
         work = Path(directory)
         shutil.copytree(source, work / 'app')
+        # Video files are intentionally excluded from the portable package. Add
+        # a tiny disposable fixture only to exercise the delivered service.
+        fixture = work / 'app/runtime/content/videos/p01.mp4'
+        fixture.parent.mkdir(parents=True, exist_ok=True)
+        fixture.write_bytes(b'contract-video-fixture' * 128)
+        source_app['apiPort'] = local_port
+        source_remote.update(host='127.0.0.1', port=remote_port, allowedClients=['127.0.0.1/32'])
+        (work / 'app/runtime/config/app.json').write_text(json.dumps(source_app), encoding='utf-8')
+        (work / 'app/runtime/config/remote-control.json').write_text(json.dumps(source_remote), encoding='utf-8')
         machine['network'].update(host='127.0.0.1', port=server.server_address[1], commandTimeoutMs=60000 if silent else 1000)
         (work / 'app/runtime/config/machine.json').write_text(json.dumps(machine), encoding='utf-8')
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -56,8 +79,10 @@ def main():
         def api(path, method='GET', data=None, authenticate=True):
             headers = {'Authorization': f'Bearer {token}'} if authenticate else {}
             if data is not None:
-                headers.update({'Content-Type': 'application/json', 'Idempotency-Key': data['requestId']})
-            req = urllib.request.Request('http://127.0.0.1:8000' + path, method=method,
+                headers['Content-Type'] = 'application/json'
+                if 'requestId' in data:
+                    headers['Idempotency-Key'] = data['requestId']
+            req = urllib.request.Request(f'http://127.0.0.1:{local_port}' + path, method=method,
                                          data=json.dumps(data).encode() if data is not None else None, headers=headers)
             try:
                 response = opener.open(req, timeout=2)
@@ -85,7 +110,7 @@ def main():
                         if time.monotonic() > deadline or process.poll() is not None:
                             raise AssertionError(f'Service failed to start; inspect {log_path}')
                         time.sleep(.1)
-                assert code == 200 and health['ready'] and health['version'] == '1.1.3', health
+                assert code == 200 and health['ready'] and health['version'] == '1.1.5', health
                 assert {k.lower(): v for k, v in headers.items()}['cache-control'] == 'no-store'
                 assert api('/api/wakefusion/v1/health', authenticate=False)[0] == 401
                 for route in ('health', 'status', 'actions'):
@@ -93,7 +118,7 @@ def main():
                     assert api('/api/wakefusion/v1/' + route)[0] == 200
                     assert time.monotonic() - started < 1
                 assert len(api('/api/wakefusion/v1/actions')[2]['actions']) == 10
-                with opener.open('http://127.0.0.1:8000/?embed=1&avatarAnchor=right') as page:
+                with opener.open(f'http://127.0.0.1:{local_port}/?embed=1&avatarAnchor=right') as page:
                     assert page.status == 200 and page.read().decode().count('wakefusion:embedded-app') == 1
                 if silent:
                     blocked = execute(0)
@@ -124,7 +149,7 @@ def main():
                     for index, expected in ((5, 'paused'), (4, 'playing'), (6, 'stopped')):
                         assert execute(index)[2]['ok']
                         assert api('/api/status')[2]['playbackState'] == expected
-                    req = urllib.request.Request('http://127.0.0.1:8000/content/videos/p01.mp4', headers={'Range': 'bytes=0-1023'})
+                    req = urllib.request.Request(f'http://127.0.0.1:{local_port}/content/videos/p01.mp4', headers={'Range': 'bytes=0-1023'})
                     with opener.open(req) as video:
                         assert video.status == 206 and len(video.read()) == 1024
                     assert execute(7)[2]['ok']
@@ -133,9 +158,88 @@ def main():
                         assert time.monotonic() < deadline
                         time.sleep(.05)
                     assert 'MOVE 0' in commands
+                key_path = work / 'app/runtime/config/remote-control.key'
+                central_key = key_path.read_text('ascii').strip()
+
+                def central(path, method='GET', key=central_key):
+                    headers = {'Authorization': f'Bearer {key}'} if key else {}
+                    query = urllib.request.Request(f'http://127.0.0.1:{remote_port}{path}', method=method, headers=headers)
+                    try:
+                        response = opener.open(query, timeout=2)
+                    except urllib.error.HTTPError as error:
+                        response = error
+                    with response:
+                        return response.status, json.load(response)
+
+                before_commands = list(commands)
+                assert central('/api/status', key='')[0] == 401
+                assert central('/api/control/points/p01/activate', 'POST', key=token)[0] == 401
+                for path in ['/', '/api/admin/login', '/api/wakefusion/v1/health', '/api/media/events']:
+                    assert central(path)[0] == 403
+                assert central('/api/control/home')[0] == 405
+                assert commands == before_commands, 'Unauthorized traffic must not reach the motor'
+                assert central('/api/status')[0] == 200 and len(central('/api/points')[1]) == 4
+                assert api('/api/wakefusion/v1/health')[0] == 200, 'Host compatibility lost'
+                if not silent:
+                    for point, coordinate in [('p01', 1600), ('p02', 3200), ('p03', 4800), ('p04', 6400)]:
+                        assert central(f'/api/control/points/{point}/activate', 'POST')[1]['accepted']
+                        deadline = time.monotonic() + 5
+                        while True:
+                            state = central('/api/status')[1]
+                            if state['currentPointId'] == point and state['targetPointId'] is None:
+                                break
+                            assert time.monotonic() < deadline
+                            time.sleep(.02)
+                        assert f'MOVE {coordinate}' in commands
+                    # Start from home; verify a full video is awaited, using real
+                    # packaged services and a local fake-controller acknowledgement.
+                    assert central('/api/control/home', 'POST')[1]['success']
+                    deadline = time.monotonic() + 5
+                    while central('/api/status')[1]['currentPointId'] != 'p00':
+                        assert time.monotonic() < deadline
+                        time.sleep(.02)
+                    assert central('/api/control/carousel/start', 'POST')[1]['accepted']
+                    deadline = time.monotonic() + 5
+                    while True:
+                        state = central('/api/status')[1]
+                        if state['currentPointId'] == 'p01' and state['targetPointId'] is None:
+                            break
+                        assert time.monotonic() < deadline
+                        time.sleep(.02)
+                    assert state['playbackState'] == 'playing'
+                    assert central('/api/control/pause', 'POST')[1]['success']
+                    assert central('/api/status')[1]['playbackState'] == 'paused'
+                    assert central('/api/control/play', 'POST')[1]['success']
+                    state = central('/api/status')[1]
+                    api('/api/media/events', 'POST', {'sessionId': state['mediaSessionId'], 'revision': state['playbackRevision'], 'event': 'ended'})
+                    deadline = time.monotonic() + 5
+                    while central('/api/status')[1]['currentPointId'] != 'p02':
+                        assert time.monotonic() < deadline
+                        time.sleep(.02)
+                    assert central('/api/control/carousel/stop', 'POST')[1]['accepted']
+                    assert central('/api/control/stop', 'POST')[1]['success']
+                    assert not central('/api/status')[1]['carouselMode']
+                    # Restart the delivered executable with the same external
+                    # config: a stored central key must not be rotated on upgrade/start.
+                    subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    process.wait(timeout=10)
+                    process = subprocess.Popen(['cmd.exe', '/d', '/c', 'start.bat'], cwd=work / 'app',
+                        env={**os.environ, 'WAKEFUSION_APP_TOKEN': token}, stdout=log, stderr=log,
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+                    deadline = time.monotonic() + 12
+                    while True:
+                        try:
+                            if central('/api/status')[0] == 200:
+                                break
+                        except OSError:
+                            pass
+                        assert time.monotonic() < deadline
+                        time.sleep(.05)
+                    assert key_path.read_text('ascii').strip() == central_key
                 assert not any('WATCH' in c or c == 'ZERO' for c in commands)
                 print(json.dumps({'result': 'passed', 'silent': silent, 'version': health['version'],
-                                  'udpCommands': commands, 'physicalControllerContacted': False}))
+                                  'udpCommands': commands, 'centralBearer': True, 'keyPreserved': not silent,
+                                  'physicalControllerContacted': False}))
             finally:
                 subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 process.wait(timeout=10)

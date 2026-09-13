@@ -10,6 +10,7 @@ release/
 logs/
 tmp/
 config/admin.json
+config/remote-control.key
 __pycache__/
 *.py[cod]
 
@@ -21,3 +22,11 @@ Desktop.ini
 
 # Image-generation intermediates; only final transparent assets are versioned.
 content/mascots/*-source.png
+
+# Large现场媒体只由部署时复制，既不提交也不纳入通用绿色包。
+content/videos/*.mp4
+content/videos/*.webm
+content/videos/*.mov
+content/videos/*.m4v
+content/videos/*.avi
+content/videos/*.mkv

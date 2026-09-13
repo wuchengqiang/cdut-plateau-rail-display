@@ -1,7 +1,7 @@
 {
   "schemaVersion": "2.0",
   "homePointId": "p00",
-  "tourMode": "pingPong",
+  "tourMode": "returnHome",
   "points": [
     {
       "id": "p00",

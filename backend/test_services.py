@@ -15,6 +15,8 @@ async def _exercise_services() -> None:
         "p04": {"id": "p04", "order": 40, "motorPosition": "p04"},
     }
     state = SystemState(current_scene="p01")
+    for scene in scenes.values():
+        scene['videoPath'] = f"content/videos/{scene['id']}.mp4"
     motor = MockMotorProvider(state, {"homePosition": "p01", "mockMoveDurationMs": 0}, _publish)
     media = MediaService(state, _publish)
     service = SceneService(state, scenes, motor, media, _publish)
