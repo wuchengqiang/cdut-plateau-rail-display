@@ -44,6 +44,13 @@ IPV4_PATTERN = re.compile(
 )
 ACTION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 PRESENTATION_MODES = frozenset({"demo", "compact", "visit"})
+PUBLIC_CONTROL_DEFAULTS = {
+    "showPlayback": True,
+    "showVolume": True,
+    "showCarousel": False,
+    "showHome": False,
+    "showEmergencyStop": False,
+}
 
 
 def normalize_presentation_configuration(raw: Any) -> dict[str, str]:
@@ -58,10 +65,24 @@ def normalize_presentation_configuration(raw: Any) -> dict[str, str]:
     rest_point = raw.get("demoRestPointId", "p04")
     if not isinstance(rest_point, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", rest_point):
         raise ValueError("presentation.demoRestPointId 必须是有效的点位 id")
-    content_point = raw.get("demoContentPointId", "p01")
+    content_point = raw.get("demoContentPointId", rest_point)
     if not isinstance(content_point, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", content_point):
         raise ValueError("presentation.demoContentPointId 必须是有效的点位 id")
     return {"mode": mode, "demoRestPointId": rest_point, "demoContentPointId": content_point}
+
+
+def normalize_public_controls(raw: Any) -> dict[str, bool]:
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("publicControls 必须是对象")
+    normalized: dict[str, bool] = {}
+    for key, default in PUBLIC_CONTROL_DEFAULTS.items():
+        value = raw.get(key, default)
+        if not isinstance(value, bool):
+            raise ValueError(f"publicControls.{key} 必须是布尔值")
+        normalized[key] = value
+    return normalized
 
 
 def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
@@ -80,6 +101,13 @@ def save_presentation_mode(mode: str) -> dict[str, str]:
     presentation = normalize_presentation_configuration({**current.get("presentation", {}), "mode": mode})
     _write_json_atomic(ROOT / "config" / "app.json", {**current, "presentation": presentation})
     return presentation
+
+
+def save_public_controls(raw: Any) -> dict[str, bool]:
+    current = read_json("config/app.json")
+    controls = normalize_public_controls(raw)
+    _write_json_atomic(ROOT / "config" / "app.json", {**current, "publicControls": controls})
+    return controls
 
 
 def _wakefusion_public_text(value: Any, maximum: int, label: str, *, required: bool) -> str:
@@ -233,7 +261,8 @@ def load_configuration() -> tuple[dict[str, Any], dict[str, dict[str, Any]], dic
     if isinstance(dwell, bool) or not isinstance(dwell, (int, float)) or not math.isfinite(dwell) or dwell <= 0:
         raise ValueError("carouselDwellSeconds 必须是大于 0 的秒数")
     presentation = normalize_presentation_configuration(app.get("presentation"))
-    app = {**app, "carouselDwellSeconds": dwell, "presentation": presentation}
+    public_controls = normalize_public_controls(app.get("publicControls"))
+    app = {**app, "carouselDwellSeconds": dwell, "presentation": presentation, "publicControls": public_controls}
     point_config = read_json("config/points.json")
     machine = read_json("config/machine.json")
     points = [point for point in point_config["points"] if point.get("enabled", True)]

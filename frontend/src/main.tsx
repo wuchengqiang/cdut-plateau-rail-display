@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent, type TouchEvent as ReactTouchEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type TouchEvent as ReactTouchEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { makeEndedFeedback, readMediaMetrics, synchronizeMedia } from './media-controller';
 import './exhibit.css';
@@ -10,23 +10,25 @@ type Status = {
 };
 type Labels = Record<string, string>;
 type Presentation = { mode: 'demo' | 'compact' | 'visit'; demoRestPointId: string; demoContentPointId: string };
+type PublicControls = { showPlayback: boolean; showVolume: boolean; showCarousel: boolean; showHome: boolean; showEmergencyStop: boolean };
 type DisplayConfig = {
   title: string; themeTitle: string; themeSubtitle: string; brandEnglish: string; coordinatePrimary: string; coordinateSecondary: string; pointPrefix: string; coordinateLabel: string; emblemPath: string;
-  labels: Labels; showMascots: boolean; mascots: Record<string, string>; presentation: Presentation; points: Point[];
+  labels: Labels; showMascots: boolean; mascots: Record<string, string>; presentation: Presentation; publicControls: PublicControls; points: Point[];
 };
 
 const fallbackPoints: Point[] = [
   { id: 'p01', order: 10, title: '高原启程', navLabel: '启程', subtitle: '从成都出发，走进青藏高原的科学现场', videoPath: '/content/videos/p01.mp4', posterPath: '/content/posters/p01.svg', backgroundPath: '/content/backgrounds/p01-plateau-base.png', mascotKey: 'main' },
   { id: 'p02', order: 20, title: '地质巡测', navLabel: '巡测', subtitle: '循着岩层与断裂带，解读高原的地质密码', videoPath: '/content/videos/p02.mp4', posterPath: '/content/posters/p02.svg', backgroundPath: '/content/backgrounds/p02-geology-route.png', mascotKey: 'moving' },
   { id: 'p03', order: 30, title: '冰川源区', navLabel: '冰川', subtitle: '追踪冰川变化，守护江河源头生态', videoPath: '/content/videos/p03.mp4', posterPath: '/content/posters/p03.svg', backgroundPath: '/content/backgrounds/p03-glacier-source.png', mascotKey: 'playing' },
-  { id: 'p04', order: 40, title: '高原守望', navLabel: '守望', subtitle: '以科学之志，守望世界屋脊', videoPath: '/content/videos/p04.mp4', posterPath: '/content/posters/p04.svg', backgroundPath: '/content/backgrounds/p04-plateau-spirit.png', mascotKey: 'guide' }
+  { id: 'p04', order: 40, title: '高原守望', navLabel: '守望', subtitle: '以科学之志，守望世界屋脊', videoPath: '/content/videos/p04.mp4', posterPath: '/content/posters/p04.svg', backgroundPath: '/content/backgrounds/p04-everest-exhibition-v3.png', mascotKey: 'guide' }
 ];
 
 const fallbackConfig: DisplayConfig = {
   title: '成都理工大学校史馆', themeTitle: '青藏高原科考', themeSubtitle: '青藏高原地质与生态科考专题展',
   brandEnglish: '', coordinatePrimary: '', coordinateSecondary: '', pointPrefix: '展项', coordinateLabel: '', emblemPath: '/content/branding/cdut-emblem.svg',
   points: fallbackPoints,
-  presentation: { mode: 'visit', demoRestPointId: 'p04', demoContentPointId: 'p01' },
+  presentation: { mode: 'visit', demoRestPointId: 'p04', demoContentPointId: 'p04' },
+  publicControls: { showPlayback: true, showVolume: true, showCarousel: false, showHome: false, showEmergencyStop: false },
   showMascots: false,
   mascots: { main: '/content/mascots/mascot-main-original.png', moving: '/content/mascots/mascot-moving-original.png', playing: '/content/mascots/mascot-playing-original.png', guide: '/content/mascots/mascot-guide-original.png', error: '/content/mascots/mascot-guide-original.png' },
   labels: {
@@ -56,9 +58,6 @@ function App() {
   const [displayConfig, setDisplayConfig] = useState<DisplayConfig>(fallbackConfig);
   const videoRef = useRef<HTMLVideoElement>(null);
   const swipeStart = useRef<{ x: number; y: number } | null>(null);
-  const volumeGesture = useRef<{ pointerId: number; startY: number; startVolume: number; dragged: boolean } | null>(null);
-  const suppressVolumeClick = useRef(false);
-  const volumeHintTimer = useRef<number | null>(null);
   const [requestError, setRequestError] = useState('');
   const [videoMuted, setVideoMuted] = useState(() => localStorage.getItem('rail-video-muted') !== 'false');
   const [volume, setVolume] = useState(() => {
@@ -67,8 +66,8 @@ function App() {
   });
   const [swipeMessage, setSwipeMessage] = useState('');
   const [presentationMessage, setPresentationMessage] = useState('');
-  const [volumeHint, setVolumeHint] = useState<number | null>(null);
   const presentation = displayConfig.presentation ?? fallbackConfig.presentation;
+  const publicControls = displayConfig.publicControls ?? fallbackConfig.publicControls;
   const displayPointId = [status.displayPointId]
     .find((id): id is string => Boolean(id && displayConfig.points.some((point) => point.id === id)));
   const reportedActiveId = [status.targetPointId, status.targetScene, status.currentPointId, status.currentScene]
@@ -80,11 +79,11 @@ function App() {
   const canNavigatePoints = presentation.mode !== 'demo';
   const showStationNavigation = presentation.mode === 'visit';
   const showOverlayNavigation = presentation.mode === 'compact';
-  const hasVideo = Boolean(activePoint?.videoPath) && activePoint?.contentType !== 'imageText' && activePoint?.videoAvailable !== false;
+  const configuredVideo = Boolean(activePoint?.videoPath) && activePoint?.contentType !== 'imageText';
+  const hasVideo = configuredVideo && activePoint?.videoAvailable !== false;
   const labels: Labels = { ...fallbackConfig.labels, avatarArea: '数字人展示区', mediaError: '此展项暂未配置可播放的视频', ...displayConfig.labels };
   const [mediaError, setMediaError] = useState(false);
   const [needsGesture, setNeedsGesture] = useState(false);
-  const [videoShape, setVideoShape] = useState({ source: '', width: 0, height: 0 });
   const mediaEvents = useRef<Array<{ time: string; event: string; position: number }>>([]);
   const [mediaMetrics, setMediaMetrics] = useState<ReturnType<typeof readMediaMetrics> | null>(null);
   const [copyMessage, setCopyMessage] = useState('');
@@ -106,7 +105,7 @@ function App() {
       const response = await fetch('/api/display-config');
       if (!response.ok) return;
       const config = await response.json() as DisplayConfig;
-      setDisplayConfig({ ...fallbackConfig, ...config, presentation: { ...fallbackConfig.presentation, ...config.presentation }, points: config.points?.length ? config.points : fallbackPoints, labels: { ...fallbackConfig.labels, ...config.labels } });
+      setDisplayConfig({ ...fallbackConfig, ...config, presentation: { ...fallbackConfig.presentation, ...config.presentation }, publicControls: { ...fallbackConfig.publicControls, ...config.publicControls }, points: config.points?.length ? config.points : fallbackPoints, labels: { ...fallbackConfig.labels, ...config.labels } });
     } catch { /* 离线演示仍保留本地默认界面 */ }
   }, []);
   const command = useCallback(async (path: string) => {
@@ -115,9 +114,9 @@ function App() {
       const response = await fetch(`/api/control/${path}`, { method: 'POST' });
       const result = await response.json() as { success?: boolean; detail?: string; message?: string; error?: string };
       if (!response.ok || result.success === false) setRequestError(result.detail ?? result.message ?? result.error ?? '操作未成功，请稍后重试');
-      await loadStatus();
+      await Promise.all([loadStatus(), loadDisplayConfig()]);
     } catch { setRequestError('服务暂时无法连接，请检查程序是否运行'); }
-  }, [loadStatus]);
+  }, [loadDisplayConfig, loadStatus]);
   const activate = useCallback((id: string) => command(`points/${encodeURIComponent(id)}/activate`), [command]);
   const reportPlayback = useCallback(async (body: { sessionId: string; revision: number; event: 'ended' | 'error' }) => {
     // Only retry identical feedback, never a motion/control action. The server
@@ -188,9 +187,14 @@ function App() {
 
   if (!activePoint) return null;
   const videoVisible = hasVideo && ['playing', 'paused', 'ended'].includes(status.playbackState);
-  const videoRatio = videoShape.source === activePoint.videoPath && videoShape.width > 0 ? videoShape.width / videoShape.height : 16 / 9;
-  const stageStyle = { '--video-ratio': videoRatio, '--video-height': `${100 / videoRatio}cqw` } as CSSProperties;
   const pointNumber = String(displayConfig.points.findIndex((point) => point.id === activePoint.id) + 1).padStart(2, '0');
+  const fixedPoint = displayConfig.points.find((point) => point.id === presentation.demoRestPointId);
+  const fixedPointLabel = fixedPoint ? `${fixedPoint.id} · ${fixedPoint.title}` : presentation.demoRestPointId;
+  const presentationHelp: Record<Presentation['mode'], string> = {
+    demo: `固定展示：隐藏点位栏及左右切换；滑轨与内容默认都使用 ${fixedPointLabel}。`,
+    compact: '简洁参观：隐藏底部点位栏，保留视频两侧切换按钮和左右滑动。',
+    visit: '完整参观：显示全部点位按钮，同时保留左右滑动切换。'
+  };
   const mascotKeys = ['main', 'moving', 'playing', 'guide'];
   const mascotKey = activePoint.mascotKey ?? mascotKeys[(Number(pointNumber) - 1) % mascotKeys.length];
   const loginAdmin = async (event: FormEvent<HTMLFormElement>) => {
@@ -213,6 +217,39 @@ function App() {
       setHardwareMessage(`${labels.hardwarePingFailed}网络请求失败`);
     }
   };
+  const reloadMedia = async () => {
+    setPresentationMessage('');
+    setRequestError('');
+    try {
+      const response = await fetch('/api/admin/reload', { method: 'POST' });
+      const result = await response.json() as { success?: boolean; message?: string; detail?: string };
+      if (!response.ok || result.success === false) {
+        setRequestError(result.detail ?? result.message ?? '素材扫描失败');
+        return;
+      }
+      await Promise.all([loadDisplayConfig(), loadStatus()]);
+      setPresentationMessage('素材已重新扫描，请查看“当前视频”检测结果');
+    } catch {
+      setRequestError('素材扫描失败，请检查服务是否运行');
+    }
+  };
+  const savePublicControls = async (next: PublicControls) => {
+    setPresentationMessage('');
+    try {
+      const response = await fetch('/api/admin/public-controls', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next)
+      });
+      const result = await response.json() as { success?: boolean; message?: string };
+      if (!response.ok || result.success === false) {
+        setPresentationMessage(result.message ?? '按钮显示设置保存失败');
+        return;
+      }
+      await loadDisplayConfig();
+      setPresentationMessage('访客页面按钮显示设置已保存');
+    } catch {
+      setPresentationMessage('按钮显示设置保存失败，请检查服务连接');
+    }
+  };
   const setVideoVolume = (value: number) => {
     setVolume(value);
     setVideoMuted(value === 0);
@@ -221,41 +258,10 @@ function App() {
     if (videoMuted && volume === 0) setVolume(.6);
     setVideoMuted((muted) => !muted);
   };
-  const beginVolumeGesture = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (!hasVideo) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    volumeGesture.current = { pointerId: event.pointerId, startY: event.clientY, startVolume: videoMuted ? 0 : volume, dragged: false };
-    setVolumeHint(Math.round((videoMuted ? 0 : volume) * 100));
-  };
-  const moveVolumeGesture = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const gesture = volumeGesture.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    const delta = gesture.startY - event.clientY;
-    if (Math.abs(delta) > 3) gesture.dragged = true;
-    const nextVolume = Math.max(0, Math.min(1, gesture.startVolume + delta / 180));
-    setVideoVolume(nextVolume);
-    setVolumeHint(Math.round(nextVolume * 100));
-  };
-  const finishVolumeGesture = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    const gesture = volumeGesture.current;
-    if (!gesture || gesture.pointerId !== event.pointerId) return;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-    if (gesture.dragged) {
-      suppressVolumeClick.current = true;
-      window.setTimeout(() => { suppressVolumeClick.current = false; }, 80);
-    }
-    volumeGesture.current = null;
-    if (volumeHintTimer.current !== null) window.clearTimeout(volumeHintTimer.current);
-    volumeHintTimer.current = window.setTimeout(() => setVolumeHint(null), 700);
-  };
-  const clickVolumeIcon = () => {
-    if (suppressVolumeClick.current) return;
-    toggleMute();
-  };
   const playVideo = () => {
-    if (!hasVideo) return;
+    if (!configuredVideo) return;
     // A touch gesture can unblock browser autoplay without waiting for a fetch.
-    if (videoRef.current) void videoRef.current.play().catch(playFailed);
+    if (hasVideo && videoRef.current) void videoRef.current.play().catch(playFailed);
     void command('play');
   };
   const emergencyStop = () => {
@@ -263,7 +269,9 @@ function App() {
     void command('emergency-stop');
   };
   const savePresentation = async (mode: Presentation['mode'], moveToRestPoint = false) => {
-    if (moveToRestPoint && !window.confirm('将停止自动巡展并移动到演示位置 p4。请确认滑轨路径安全。')) return;
+    const restPoint = displayConfig.points.find((point) => point.id === presentation.demoRestPointId);
+    const restPointName = restPoint ? `${restPoint.id} · ${restPoint.title}` : presentation.demoRestPointId;
+    if (moveToRestPoint && !window.confirm(`将停止自动巡展并移动到固定位置（${restPointName}）。请确认滑轨路径安全。`)) return;
     setPresentationMessage('');
     try {
       const response = await fetch('/api/admin/presentation', {
@@ -277,7 +285,7 @@ function App() {
         return;
       }
       await Promise.all([loadDisplayConfig(), loadStatus()]);
-      setPresentationMessage(result.moved ? `已切换为静态演示，并已前往 ${result.restPointId ?? 'p4'}` : '展示方式已保存');
+      setPresentationMessage(result.moved ? `已切换为固定展示，并正在前往 ${result.restPointId ?? presentation.demoRestPointId}` : '展示方式已保存');
     } catch {
       setPresentationMessage('展示配置保存失败，请检查服务连接');
     }
@@ -325,7 +333,7 @@ function App() {
   const nextPoint = displayConfig.points[activePointIndex + 1];
 
   return <main className={`exhibit-shell avatar-anchor-${avatarAnchor} ${embedMode ? 'embed-mode' : ''}`} style={{ backgroundImage: `url("${activePoint.backgroundPath}")` }}>
-    <div className="terrain-lines" />
+    <div className="terrain-lines" aria-hidden="true" />
     <header className="masthead">
       <div className="brand"><img className="brand-emblem" src={displayConfig.emblemPath} alt="成都理工大学校徽" /><div><p>{displayConfig.title}</p><h1>{displayConfig.themeTitle}</h1></div></div>
       <div className="header-actions">{!embedMode && <button className="admin-entry" type="button" onClick={() => { setAdminLoginError(''); setAdminLoginOpen(true); }}>{labels.adminEntry}</button>}</div>
@@ -335,10 +343,10 @@ function App() {
       <div className="media-stack">
       <div className="media-frame">
         <div className="frame-corner top-left" /><div className="frame-corner top-right" /><div className="frame-corner bottom-left" /><div className="frame-corner bottom-right" />
-        <div className="video-stage" style={stageStyle} onTouchStart={beginSwipe} onTouchEnd={finishSwipe} onTouchCancel={() => { swipeStart.current = null; }}>
+        <div className="video-stage" onTouchStart={beginSwipe} onTouchEnd={finishSwipe} onTouchCancel={() => { swipeStart.current = null; }}>
           {(!videoVisible || mediaError) && <img className="poster" src={activePoint.imagePath || activePoint.backgroundPath} alt="" />}
           {!hasVideo && activePoint.contentText && <p className="content-text">{activePoint.contentText}</p>}
-          <video key={status.mediaSessionId ?? 'initial'} ref={videoRef} className={videoVisible && !mediaError ? 'visible' : ''} src={hasVideo ? activePoint.videoPath : undefined} muted={videoMuted} preload="auto" playsInline controls={false} disablePictureInPicture onLoadedMetadata={(event) => { const video = event.currentTarget; setVideoShape({ source: activePoint.videoPath, width: video.videoWidth, height: video.videoHeight }); }} onPlaying={() => setNeedsGesture(false)} onEnded={(event) => {
+          <video key={status.mediaSessionId ?? 'initial'} ref={videoRef} className={videoVisible && !mediaError ? 'visible' : ''} src={hasVideo ? activePoint.videoPath : undefined} muted={videoMuted} preload="auto" playsInline controls={false} disablePictureInPicture onPlaying={() => setNeedsGesture(false)} onEnded={(event) => {
             setNeedsGesture(true);
             if (videoRef.current !== event.currentTarget || status.displayPointId !== activePoint.id) return;
             const feedback = makeEndedFeedback(event.currentTarget, { source: new URL(activePoint.videoPath, location.href).href, sessionId: status.mediaSessionId ?? '', revision: status.playbackRevision ?? 0, state: status.playbackState });
@@ -353,16 +361,54 @@ function App() {
           {hasVideo && (!videoVisible || needsGesture) && !mediaError && <button className="poster-play" type="button" onClick={playVideo} aria-label={labels.playCurrent}><span>▶</span>{labels.playCurrent}</button>}
           {showOverlayNavigation && <div className="overlay-navigation" aria-label="切换展项"><button type="button" disabled={!previousPoint || Boolean(status.targetPointId ?? status.targetScene)} onClick={() => goAdjacent(-1)} aria-label={previousPoint ? `切换到${previousPoint.navLabel}` : '没有上一展项'}>›</button><button type="button" disabled={!nextPoint || Boolean(status.targetPointId ?? status.targetScene)} onClick={() => goAdjacent(1)} aria-label={nextPoint ? `切换到${nextPoint.navLabel}` : '没有下一展项'}>‹</button></div>}
         </div>
+      {(publicControls.showPlayback || publicControls.showVolume || publicControls.showCarousel || publicControls.showHome || publicControls.showEmergencyStop) && <div className="control-dock" aria-label="展项控制">
+        {(publicControls.showPlayback || publicControls.showVolume) && <div className="playback-controls" role="group" aria-label="视频播放控制">
+          {publicControls.showPlayback && <><button className="play-primary" disabled={!configuredVideo} onClick={playVideo}>{labels.play}</button><button disabled={!configuredVideo} onClick={() => void command('pause')}>{labels.pause}</button><button disabled={!configuredVideo} onClick={() => void command('stop')}>{labels.stop}</button></>}
+          {publicControls.showVolume && <div className={`volume-control ${videoMuted || volume === 0 ? 'muted' : ''}`} aria-label="视频音量控制">
+            <button className="volume-icon" type="button" disabled={!hasVideo} onClick={toggleMute} aria-label={videoMuted || volume === 0 ? labels.unmute : labels.mute} aria-pressed={videoMuted || volume === 0}>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3Z" />{videoMuted || volume === 0 ? <path className="mute-cross" d="m15.5 8.5 5 7m0-7-5 7" /> : <><path className="sound-wave" d="M15.5 8.5a5 5 0 0 1 0 7" /><path className="sound-wave" d="M18 6a8.5 8.5 0 0 1 0 12" /></>}</svg>
+            </button>
+            <input type="range" min="0" max="100" step="1" value={Math.round(volume * 100)} disabled={!hasVideo} onChange={(event) => setVideoVolume(Number(event.currentTarget.value) / 100)} aria-label={labels.volume} aria-valuetext={`${Math.round(volume * 100)}%`} />
+          </div>}
+        </div>}
+        {(publicControls.showCarousel || publicControls.showHome || publicControls.showEmergencyStop) && <div className="rail-controls" role="group" aria-label="滑轨控制">
+          {publicControls.showCarousel && <button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button>}
+          {publicControls.showHome && <button onClick={() => void command('home')}>{labels.home}</button>}
+          {publicControls.showEmergencyStop && <button className="emergency-stop" onClick={emergencyStop}>{labels.emergencyStop}</button>}
+        </div>}
+      </div>}
       </div>
-      <div className="control-dock" aria-label="展项控制"><div className="playback-controls" role="group" aria-label="视频播放控制"><button disabled={!hasVideo} onClick={playVideo}>{labels.play}</button><button disabled={!hasVideo} onClick={() => void command('pause')}>{labels.pause}</button><button disabled={!hasVideo} onClick={() => void command('stop')}>{labels.stop}</button><button className={`volume-icon ${videoMuted || volume === 0 ? 'muted' : ''}`} disabled={!hasVideo} onPointerDown={beginVolumeGesture} onPointerMove={moveVolumeGesture} onPointerUp={finishVolumeGesture} onPointerCancel={finishVolumeGesture} onClick={clickVolumeIcon} aria-label={`${videoMuted ? labels.unmute : labels.mute}；按住上下滑动调节音量`}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9H4Z" />{!(videoMuted || volume === 0) && <><path className="sound-wave" d="M16 8.5a5 5 0 0 1 0 7" /><path className="sound-wave" d="M18.5 6a8.5 8.5 0 0 1 0 12" /></>}</svg>{volumeHint !== null && <span className="volume-hint">{volumeHint}%</span>}</button></div><div className="rail-controls" role="group" aria-label="滑轨控制"><button className={status.carouselMode ? 'selected' : ''} onClick={() => void command(`carousel/${status.carouselMode ? 'stop' : 'start'}`)}>{status.carouselMode ? labels.stopTour : labels.autoTour}</button><button onClick={() => void command('home')}>{labels.home}</button><button className="emergency-stop" onClick={emergencyStop}>{labels.emergencyStop}</button></div></div>
       </div>
     </section>
     <aside className="avatar-lane" aria-label={labels.avatarArea} data-avatar-anchor={avatarAnchor} />
     {!embedMode && displayConfig.showMascots === true && <div className="mascot-wrap" data-mode={mascotKey}><div className="mascot-callout"><span>{mascotKey === 'main' ? labels.mascotMainTitle : labels.mascotGuideTitle}</span><b>{mascotKey === 'main' ? labels.mascotMainText : labels.mascotGuideText}</b></div><img src={displayConfig.mascots[mascotKey] ?? displayConfig.mascots.main} alt="科考主题玩偶" /></div>}
     {showStationNavigation && <nav className="station-nav" aria-label="可配置点位">{displayConfig.points.map((point, index) => <button disabled={Boolean(status.targetPointId ?? status.targetScene) && point.id !== activeId} aria-current={point.id === activeId ? 'true' : undefined} className={point.id === activeId ? 'active' : ''} key={point.id} onClick={() => void activate(point.id)}><em>{String(index + 1).padStart(2, '0')}</em><span>{point.navLabel}</span></button>)}</nav>}
     {!embedMode && adminLoginOpen && <div className="admin-login-backdrop"><form className="admin-login" onSubmit={loginAdmin}><h2>{labels.adminLoginTitle}</h2><label>{labels.adminPassword}<input autoFocus type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} required /></label>{adminLoginError && <p role="alert">{adminLoginError}</p>}<div><button type="button" onClick={() => setAdminLoginOpen(false)}>{labels.adminCancel}</button><button type="submit">{labels.adminLogin}</button></div></form></div>}
-    {!embedMode && admin && <section className="admin-panel"><button className="close" onClick={() => setAdmin(false)}>×</button><span>管理员调试面板</span><div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　影片：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '自动巡展中' : '手动控制'}</div><div className="presentation-admin"><strong>展示方式</strong><button className={presentation.mode === 'demo' ? 'selected' : ''} onClick={() => void savePresentation('demo')}>明日静态演示</button><button className={presentation.mode === 'compact' ? 'selected' : ''} onClick={() => void savePresentation('compact')}>隐藏点位栏</button><button className={presentation.mode === 'visit' ? 'selected' : ''} onClick={() => void savePresentation('visit')}>正常参观</button>{presentation.mode === 'demo' && <button onClick={() => void savePresentation('demo', true)}>前往 p4 演示位置</button>}</div>{presentationMessage && <small className="presentation-message">{presentationMessage}</small>}<div>{displayConfig.points.map((point, index) => <button key={point.id} onClick={() => void activate(point.id)}>{index + 1} · {point.title}</button>)}</div><div><button disabled={!hasVideo} onClick={playVideo}>{labels.play}</button><button disabled={!hasVideo} onClick={() => void command('pause')}>{labels.pause}</button><button disabled={!hasVideo} onClick={() => void command('stop')}>{labels.stop}</button><button onClick={() => void command('home')}>{labels.home}</button><button className="emergency-stop" onClick={emergencyStop}>{labels.emergencyStop}</button></div><div><button onClick={() => void command('carousel/start')}>启动巡展</button><button onClick={() => void command('carousel/stop')}>停止巡展</button><button onClick={() => void hardwarePing()}>{labels.hardwarePing}</button></div>{hardwareMessage && <small className="hardware-message">{hardwareMessage}</small>}
-      <div className="admin-diagnostics"><h3>播放诊断</h3>{mediaMetrics && <p>视频尺寸：{mediaMetrics.resolution}<br />进度：{mediaMetrics.currentTime} / {mediaMetrics.duration ?? '未知'} 秒　缓冲余量：{mediaMetrics.bufferedSeconds} 秒<br />丢帧：{mediaMetrics.droppedFrames ?? '不支持'} / {mediaMetrics.totalFrames ?? '不支持'}<br />实际暂停：{mediaMetrics.paused ? '是' : '否'}　播放结束：{mediaMetrics.ended ? '是' : '否'}</p>}<button onClick={() => void copyDiagnostics()}>复制播放诊断</button>{copyMessage && <p>{copyMessage}</p>}{status.error && <p>硬件：{status.error}</p>}{requestError && <p>操作：{requestError}</p>}{mediaError && <p>{labels.mediaError}</p>}{swipeMessage && <p>{swipeMessage}</p>}</div>
+    {!embedMode && admin && <section className="admin-panel">
+      <button className="close" onClick={() => setAdmin(false)}>×</button>
+      <span>管理员调试面板</span>
+      <div className="admin-status">滑轨：{stateLabel[status.motorState] ?? status.motorState}　视频：{stateLabel[status.playbackState] ?? status.playbackState}　巡展：{status.carouselMode ? '自动巡展中' : '手动控制'}</div>
+      <div className="presentation-admin">
+        <strong>界面显示方式</strong>
+        <button className={presentation.mode === 'demo' ? 'selected' : ''} onClick={() => void savePresentation('demo')}>固定展示</button>
+        <button className={presentation.mode === 'compact' ? 'selected' : ''} onClick={() => void savePresentation('compact')}>简洁参观</button>
+        <button className={presentation.mode === 'visit' ? 'selected' : ''} onClick={() => void savePresentation('visit')}>完整参观</button>
+        <p className="presentation-explanation">{presentationHelp[presentation.mode]}</p>
+        {presentation.mode === 'demo' && <button onClick={() => void savePresentation('demo', true)}>滑轨移动到固定位置（{fixedPointLabel}）</button>}
+      </div>
+      {presentationMessage && <small className="presentation-message">{presentationMessage}</small>}
+      <div className="admin-action-group warning"><strong>滑轨点位测试（点击即真实移动）</strong>{displayConfig.points.map((point, index) => <button key={point.id} onClick={() => void activate(point.id)}>{index + 1} · {point.title}</button>)}</div>
+      <div className="media-check"><strong>当前视频</strong><span>{activePoint.id}：{activePoint.videoPath || '未配置路径'}</span><span className={hasVideo ? 'available' : 'missing'}>{hasVideo ? '已检测到文件' : '未检测到文件'}</span><button onClick={() => void reloadMedia()}>重新扫描素材</button></div>
+      <div className="public-controls-admin"><strong>访客页面显示按钮</strong><small>仅影响正式展示页面；下方管理员测试按钮始终保留。</small>
+        <label><input type="checkbox" checked={publicControls.showPlayback} onChange={(event) => void savePublicControls({ ...publicControls, showPlayback: event.target.checked })} />播放、暂停、停止</label>
+        <label><input type="checkbox" checked={publicControls.showVolume} onChange={(event) => void savePublicControls({ ...publicControls, showVolume: event.target.checked })} />音量</label>
+        <label><input type="checkbox" checked={publicControls.showCarousel} onChange={(event) => void savePublicControls({ ...publicControls, showCarousel: event.target.checked })} />自动巡展</label>
+        <label><input type="checkbox" checked={publicControls.showHome} onChange={(event) => void savePublicControls({ ...publicControls, showHome: event.target.checked })} />回原点</label>
+        <label><input type="checkbox" checked={publicControls.showEmergencyStop} onChange={(event) => void savePublicControls({ ...publicControls, showEmergencyStop: event.target.checked })} />紧急停机（软停）</label>
+      </div>
+      <div className="admin-action-group"><strong>媒体测试（不会移动滑轨）</strong><button disabled={!configuredVideo} onClick={playVideo}>{labels.play}</button><button disabled={!configuredVideo} onClick={() => void command('pause')}>{labels.pause}</button><button disabled={!configuredVideo} onClick={() => void command('stop')}>{labels.stop}</button></div>
+      <div className="admin-action-group warning"><strong>滑轨测试（会发送真实命令）</strong><button onClick={() => void command('home')}>{labels.home}</button><button className="emergency-stop" onClick={emergencyStop}>{labels.emergencyStop}</button><button onClick={() => void command('carousel/start')}>启动巡展</button><button onClick={() => void command('carousel/stop')}>停止巡展</button><button onClick={() => void hardwarePing()}>{labels.hardwarePing}</button></div>{hardwareMessage && <small className="hardware-message">{hardwareMessage}</small>}
+      <div className="admin-diagnostics"><h3>视频状态检查</h3>{!hasVideo ? <p>当前未检测到视频文件。请核对上方路径，复制完成后点击“重新扫描素材”。</p> : mediaMetrics && <p>视频尺寸：{mediaMetrics.resolution}<br />进度：{mediaMetrics.currentTime} / {mediaMetrics.duration ?? '未知'} 秒　缓冲余量：{mediaMetrics.bufferedSeconds} 秒<br />丢帧：{mediaMetrics.droppedFrames ?? '不支持'} / {mediaMetrics.totalFrames ?? '不支持'}<br />实际暂停：{mediaMetrics.paused ? '是' : '否'}　播放结束：{mediaMetrics.ended ? '是' : '否'}</p>}<button onClick={() => void copyDiagnostics()}>复制检查信息</button>{copyMessage && <p>{copyMessage}</p>}{status.error && <p>硬件：{status.error}</p>}{requestError && <p>操作：{requestError}</p>}{mediaError && <p>{labels.mediaError}</p>}{swipeMessage && <p>{swipeMessage}</p>}</div>
     </section>}
   </main>;
 }

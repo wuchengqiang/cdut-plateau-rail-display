@@ -74,7 +74,7 @@ def main() -> None:
                     if time.monotonic() >= deadline:
                         raise AssertionError('Service never started')
                     time.sleep(.05)
-            assert code == 200 and health['ready'] is True and health['version'] == '1.1.5', (code, health)
+            assert code == 200 and health['ready'] is True and health['version'] == '1.1.7', (code, health)
             assert header(headers, 'Cache-Control') == 'no-store'
             assert request(base_url + '/api/wakefusion/v1/health')[0] == 401
             assert request_text(base_url + '/')[0] == 200

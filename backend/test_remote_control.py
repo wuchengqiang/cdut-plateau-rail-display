@@ -70,7 +70,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_no_admin_host_feedback_assets_or_get_motion(self):
         for path in ['/', '/docs', '/openapi.json', '/content/videos/p01.mp4', '/api/display-config',
-                     '/api/admin/login', '/api/admin/reload', '/api/admin/hardware/ping',
+                     '/api/admin/login', '/api/admin/reload', '/api/admin/hardware/ping', '/api/admin/public-controls',
                      '/api/wakefusion/v1/health', '/api/wakefusion/v1/actions/0/execute', '/api/media/events',
                      '/api/control/scene/p01', '/api/control/points/p01/activate/extra']:
             self.assertEqual((await self.request(path, 'POST'))[0], 403)
@@ -170,6 +170,7 @@ class LauncherTests(unittest.TestCase):
             shutil.copytree(project / 'backend/static', root / 'backend/static')
             (root / 'content/videos').mkdir(parents=True)
             (root / 'content/videos/p01.mp4').write_bytes(b'contract-fixture')
+            (root / 'content/videos/p04.mp4').write_bytes(b'contract-fixture')
             probes = [socket.socket(), socket.socket()]
             for probe in probes:
                 probe.bind(('127.0.0.1', 0))

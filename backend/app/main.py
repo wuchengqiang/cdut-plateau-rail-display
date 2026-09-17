@@ -25,6 +25,7 @@ from .config import (
     load_admin_password,
     load_configuration,
     load_wakefusion_configuration,
+    save_public_controls,
     public_wakefusion_actions,
     save_presentation_mode,
     save_wakefusion_text_configuration,
@@ -35,7 +36,7 @@ from .services import CarouselService, MediaService, MotorProtocolError, MotorPr
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("polar_rail")
-SERVICE_VERSION = "1.1.5"
+SERVICE_VERSION = "1.1.7"
 HARDWARE_INITIALIZE_TIMEOUT_SECONDS = 15
 
 
@@ -457,6 +458,14 @@ class PresentationModeBody(BaseModel):
     moveToRestPoint: bool = False
 
 
+class PublicControlsBody(BaseModel):
+    showPlayback: bool
+    showVolume: bool
+    showCarousel: bool
+    showHome: bool
+    showEmergencyStop: bool
+
+
 @app.post("/api/media/events")
 async def media_event(body: MediaEventBody) -> dict[str, Any]:
     """Same-origin player feedback, not an action the central controller must call."""
@@ -484,6 +493,7 @@ async def display_config() -> dict[str, Any]:
         "emblemPath": asset_url(runtime.app_config["emblemPath"]),
         "labels": runtime.app_config.get("labels", {}),
         "presentation": runtime.app_config["presentation"],
+        "publicControls": runtime.app_config["publicControls"],
         "showMascots": runtime.app_config.get("showMascots", False) is True,
         "mascots": {key: asset_url(path) for key, path in runtime.app_config["mascots"].items()},
         "points": [
@@ -514,10 +524,19 @@ async def play(request: Request) -> dict[str, Any]:
         # The landing page displays the first visible point, not the hidden home.
         # Register that media before playing so Pause works even without a rail move.
         visible = {key: value for key, value in runtime.scenes.items() if value.get("visible", True)}
-        displayed = runtime.state.target_scene or runtime.state.display_scene or runtime.state.current_scene
+        displayed = runtime.state.target_scene or runtime.state.display_scene
+        if not displayed and runtime.app_config["presentation"]["mode"] == "demo":
+            displayed = runtime.app_config["presentation"]["demoContentPointId"]
+        displayed = displayed or runtime.state.current_scene
         selected = displayed if displayed in visible else next(iter(visible), None)
+        if selected is not None and not runtime.scene.has_video(selected):
+            # 现场可能在服务启动后才复制大体积视频。播放时重新扫描一次，
+            # 无需重启绿色版，也不依赖管理员先手动重载。
+            await runtime.reload_content()
+            visible = {key: value for key, value in runtime.scenes.items() if value.get("visible", True)}
+            selected = displayed if displayed in visible else next(iter(visible), None)
         if selected is None or not runtime.scene.has_video(selected):
-            raise HTTPException(status_code=409, detail="当前没有可播放的展项")
+            raise HTTPException(status_code=409, detail="当前点位未检测到视频，请核对文件路径后重新扫描素材")
         runtime.state.display_scene = selected
         await runtime.media.load(selected)
     await runtime.media.play()
@@ -606,11 +625,25 @@ async def admin_presentation(request: Request) -> dict[str, Any]:
     return {"success": True, "presentation": runtime.app_config["presentation"]}
 
 
+@app.get("/api/admin/public-controls")
+async def admin_public_controls(request: Request) -> dict[str, Any]:
+    require_admin(request)
+    return {"success": True, "publicControls": runtime.app_config["publicControls"]}
+
+
+@app.put("/api/admin/public-controls")
+async def update_admin_public_controls(body: PublicControlsBody, request: Request) -> dict[str, Any]:
+    require_admin(request)
+    controls = save_public_controls(body.model_dump())
+    await runtime.reload_content()
+    return {"success": True, "publicControls": controls}
+
+
 @app.put("/api/admin/presentation")
 async def save_admin_presentation(body: PresentationModeBody, request: Request) -> JSONResponse:
     require_admin(request)
     if body.moveToRestPoint and body.mode != "demo":
-        return JSONResponse({"success": False, "error": "INVALID_REQUEST", "message": "只有明日演示模式可前往演示点"}, status_code=400)
+        return JSONResponse({"success": False, "error": "INVALID_REQUEST", "message": "只有固定展示模式可移动到固定位置"}, status_code=400)
     if body.moveToRestPoint:
         require_hardware_initialized()
     try:
@@ -619,6 +652,8 @@ async def save_admin_presentation(body: PresentationModeBody, request: Request) 
     except ValueError as error:
         return JSONResponse({"success": False, "error": "PRESENTATION_INVALID", "message": str(error)}, status_code=400)
     response: dict[str, Any] = {"success": True, "presentation": presentation, "moved": False}
+    if body.mode == "demo" and not body.moveToRestPoint:
+        await runtime.scene.present(presentation["demoContentPointId"])
     if body.moveToRestPoint:
         await runtime.carousel.stop({"method": "PUT", "path": "/api/admin/presentation"})
         rest_point = presentation["demoRestPointId"]

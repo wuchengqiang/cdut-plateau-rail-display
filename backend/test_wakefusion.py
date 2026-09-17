@@ -100,7 +100,7 @@ def main() -> None:
         assert header(health_headers, "Cache-Control") == "no-store"
         assert header(health_headers, "Content-Type").startswith("application/json; charset=utf-8")
         assert health["appId"] == "cdut-slider-screen"
-        assert health["version"] == "1.1.5"
+        assert health["version"] == "1.1.7"
 
         status_code, _, status = request(f"{base_url}/api/wakefusion/v1/status", headers=auth_headers)
         assert status_code == 200 and {"state", "playing", "updatedAt", "actionsHash"}.issubset(status)
@@ -185,6 +185,18 @@ def main() -> None:
         _, _, display_after_mode = request(f'{base_url}/api/display-config')
         assert display_after_mode['presentation']['mode'] == 'compact'
         assert request(f"{base_url}/api/admin/presentation", "PUT", {"mode": "demo", "moveToRestPoint": False}, {"Cookie": admin_cookie})[0] == 200
+        controls_code, _, controls = request(f"{base_url}/api/admin/public-controls", headers={"Cookie": admin_cookie})
+        assert controls_code == 200 and controls['publicControls']['showHome'] is False
+        updated_controls = {**controls['publicControls'], 'showCarousel': True, 'showHome': True}
+        saved_controls_code, _, saved_controls = request(
+            f"{base_url}/api/admin/public-controls", "PUT", updated_controls, {"Cookie": admin_cookie}
+        )
+        assert saved_controls_code == 200 and saved_controls['publicControls'] == updated_controls
+        _, _, display_with_controls = request(f'{base_url}/api/display-config')
+        assert display_with_controls['publicControls'] == updated_controls
+        assert request(
+            f"{base_url}/api/admin/public-controls", "PUT", controls['publicControls'], {"Cookie": admin_cookie}
+        )[0] == 200
 
         # The central controller's unchanged HTTP endpoints drive the new policy.
         _, _, display = request(f'{base_url}/api/display-config')

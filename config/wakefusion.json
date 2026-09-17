@@ -1,7 +1,7 @@
 {
   "schemaVersion": "wakefusion.embedded-app/v1",
   "appId": "cdut-slider-screen",
-  "version": "1.1.5",
+  "version": "1.1.7",
   "actions": [
     {
       "id": "scene-p01",

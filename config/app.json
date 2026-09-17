@@ -15,7 +15,14 @@
   "presentation": {
     "mode": "demo",
     "demoRestPointId": "p04",
-    "demoContentPointId": "p01"
+    "demoContentPointId": "p04"
+  },
+  "publicControls": {
+    "showPlayback": true,
+    "showVolume": true,
+    "showCarousel": false,
+    "showHome": false,
+    "showEmergencyStop": false
   },
   "showMascots": false,
   "mascots": {

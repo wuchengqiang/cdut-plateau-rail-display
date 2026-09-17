@@ -29,7 +29,11 @@ class ContentConfigTests(unittest.TestCase):
             with patch.object(config, 'ROOT', root), patch.object(config, 'read_json', side_effect=lambda name: copy.deepcopy(configs[name])):
                 app, points, machine = config.load_configuration()
                 self.assertEqual(app['carouselDwellSeconds'], 12)
-                self.assertEqual(app['presentation'], {'mode': 'visit', 'demoRestPointId': 'p04', 'demoContentPointId': 'p01'})
+                self.assertEqual(app['presentation'], {'mode': 'visit', 'demoRestPointId': 'p04', 'demoContentPointId': 'p04'})
+                self.assertEqual(app['publicControls'], {
+                    'showPlayback': True, 'showVolume': True, 'showCarousel': False,
+                    'showHome': False, 'showEmergencyStop': False,
+                })
                 self.assertEqual(app['tourMode'], 'pingPong')
                 self.assertEqual([points[f'p0{i}']['videoAvailable'] for i in range(1, 5)], [True, False, False, False])
                 self.assertEqual(list(machine['positionsMm'].values()), [0, 1600, 3200, 4800, 6400])
@@ -40,17 +44,28 @@ class ContentConfigTests(unittest.TestCase):
                     configs['config/app.json']['carouselDwellSeconds'] = invalid
                     with self.assertRaises(ValueError):
                         config.load_configuration()
+                configs['config/app.json']['carouselDwellSeconds'] = 12
+                configs['config/app.json']['publicControls'] = {'showHome': 'yes'}
+                with self.assertRaises(ValueError):
+                    config.load_configuration()
 
     def test_presentation_mode_validation_and_atomic_save(self):
         with tempfile.TemporaryDirectory(prefix='rail-presentation-') as directory:
             root = Path(directory)
             (root / 'config').mkdir()
             app_path = root / 'config' / 'app.json'
-            app_path.write_text('{"title":"测试","presentation":{"mode":"visit","demoRestPointId":"p04","demoContentPointId":"p01"}}', encoding='utf-8')
+            app_path.write_text('{"title":"测试","presentation":{"mode":"visit","demoRestPointId":"p04","demoContentPointId":"p04"}}', encoding='utf-8')
             with patch.object(config, 'ROOT', root):
-                self.assertEqual(config.save_presentation_mode('demo'), {'mode': 'demo', 'demoRestPointId': 'p04', 'demoContentPointId': 'p01'})
+                self.assertEqual(config.save_presentation_mode('demo'), {'mode': 'demo', 'demoRestPointId': 'p04', 'demoContentPointId': 'p04'})
                 saved = __import__('json').loads(app_path.read_text(encoding='utf-8'))
-                self.assertEqual(saved['presentation'], {'mode': 'demo', 'demoRestPointId': 'p04', 'demoContentPointId': 'p01'})
+                self.assertEqual(saved['presentation'], {'mode': 'demo', 'demoRestPointId': 'p04', 'demoContentPointId': 'p04'})
+                self.assertEqual(config.save_public_controls({
+                    'showPlayback': False, 'showVolume': True, 'showCarousel': True,
+                    'showHome': True, 'showEmergencyStop': False,
+                }), {
+                    'showPlayback': False, 'showVolume': True, 'showCarousel': True,
+                    'showHome': True, 'showEmergencyStop': False,
+                })
                 for raw in [{'mode': 'hidden'}, {'mode': 'demo', 'demoRestPointId': '../p04'}, {'mode': 'demo', 'demoContentPointId': '../p01'}, []]:
                     with self.assertRaises(ValueError):
                         config.normalize_presentation_configuration(raw)

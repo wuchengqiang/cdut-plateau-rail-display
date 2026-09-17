@@ -69,7 +69,7 @@ def prepare() -> Path:
         text = (ROOT / 'wakefusion' / name).read_text('ascii')
         (app / name).write_bytes(text.replace('\r\n', '\n').replace('\n', '\r\n').encode('ascii'))
     shutil.copy2(ROOT / 'packaging/部署步骤.md', staging / '部署步骤.md')
-    for name in ['中控平板接入交接-青藏高原滑轨屏.md', '自动巡展规则与配置.md']:
+    for name in ['中控平板接入交接-青藏高原滑轨屏.md', '自动巡展规则与配置.md', '4号点位竖屏界面设计说明.md']:
         shutil.copy2(ROOT / 'docs' / name, staging / name)
     if list(staging.rglob('*.key')):
         raise RuntimeError('Installation key must never be included in a generic bundle')
@@ -99,6 +99,11 @@ def archive(directory: str) -> None:
     verification = json.loads((bundle / 'verification.json').read_text('utf-8'))
     if not verification.get('passed') or verification.get('physicalControllerContacted') is not False:
         raise ValueError('Isolated verification must pass before archiving')
+    # Edge creates this cache on the first standalone run. It contains no
+    # application data and must never bloat or personalize a delivery ZIP.
+    browser_profile = bundle / 'app' / 'runtime' / 'browser-profile'
+    if browser_profile.exists():
+        shutil.rmtree(browser_profile)
     files = sorted(path for path in bundle.rglob('*') if path.is_file())
     if any(path.suffix.lower() == '.key' for path in files):
         raise ValueError('Remove installation credentials from the generic delivery before archiving')

@@ -9,6 +9,7 @@ release/
 # Local runtime data
 logs/
 tmp/
+browser-profile/
 config/admin.json
 config/remote-control.key
 __pycache__/

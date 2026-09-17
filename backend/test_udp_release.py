@@ -66,6 +66,7 @@ def main():
         fixture = work / 'app/runtime/content/videos/p01.mp4'
         fixture.parent.mkdir(parents=True, exist_ok=True)
         fixture.write_bytes(b'contract-video-fixture' * 128)
+        (fixture.parent / 'p04.mp4').write_bytes(b'contract-video-fixture' * 128)
         source_app['apiPort'] = local_port
         source_remote.update(host='127.0.0.1', port=remote_port, allowedClients=['127.0.0.1/32'])
         (work / 'app/runtime/config/app.json').write_text(json.dumps(source_app), encoding='utf-8')
@@ -110,7 +111,7 @@ def main():
                         if time.monotonic() > deadline or process.poll() is not None:
                             raise AssertionError(f'Service failed to start; inspect {log_path}')
                         time.sleep(.1)
-                assert code == 200 and health['ready'] and health['version'] == '1.1.5', health
+                assert code == 200 and health['ready'] and health['version'] == '1.1.7', health
                 assert {k.lower(): v for k, v in headers.items()}['cache-control'] == 'no-store'
                 assert api('/api/wakefusion/v1/health', authenticate=False)[0] == 401
                 for route in ('health', 'status', 'actions'):
