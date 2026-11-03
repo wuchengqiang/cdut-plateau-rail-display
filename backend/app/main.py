@@ -32,6 +32,7 @@ from .config import (
     wakefusion_actions_hash,
 )
 from .services import CarouselService, MediaService, MotorProtocolError, MotorProvider, SceneService, SystemState, create_motor_provider
+from .media_diagnostics import MediaDiagnosticEvent, MediaDiagnostics
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -192,13 +193,17 @@ class DisplayRuntime:
 
 
 runtime = DisplayRuntime()
+media_diagnostics = MediaDiagnostics(ROOT)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await runtime.start()
-    yield
-    await runtime.shutdown()
+    try:
+        yield
+    finally:
+        await runtime.shutdown()
+        media_diagnostics.close()
 
 
 app = FastAPI(title="Polar Rail Display", version=SERVICE_VERSION, lifespan=lifespan)
@@ -207,6 +212,12 @@ app.mount("/content", StaticFiles(directory=ROOT / "content"), name="content")
 
 @app.middleware("http")
 async def wakefusion_response_headers(request: Request, call_next: Any) -> Any:
+    if request.url.path == "/api/media/diagnostics" and request.method == "POST":
+        # Our browser always sends a small JSON body with Content-Length. Reject
+        # missing/oversized lengths before parsing arbitrary diagnostic input.
+        length = request.headers.get("content-length", "")
+        if not length.isdecimal() or int(length) > 8192:
+            return JSONResponse({"success": False}, status_code=413)
     response = await call_next(request)
     if request.url.path.startswith("/api/wakefusion/v1"):
         response.headers["Cache-Control"] = "no-store"
@@ -472,7 +483,24 @@ async def media_event(body: MediaEventBody) -> dict[str, Any]:
     result = await runtime.media.report_event(body.sessionId, body.revision, body.event)
     if body.event == "error" and result.get("accepted"):
         await runtime.carousel.stop()
+        # Fallback evidence when the browser's detailed diagnostic request fails.
+        try:
+            await asyncio.to_thread(media_diagnostics.record, MediaDiagnosticEvent(
+                event="media_error", pageId="server", pageMode="server",
+                sessionId=body.sessionId, revision=body.revision,
+                pointId=runtime.state.display_scene, playbackState="error",
+            ), client_id="server", allowed_point_ids=runtime.scenes)
+        except Exception:
+            pass  # Diagnostics must not change acceptance of playback feedback.
     return result
+
+
+@app.post("/api/media/diagnostics")
+def media_diagnostic(body: MediaDiagnosticEvent, request: Request) -> dict[str, Any]:
+    """Local-page anomaly telemetry only; the 8001 gateway does not expose it."""
+    saved = media_diagnostics.record(body, client_id=request.client.host if request.client else "local",
+                                     allowed_point_ids=runtime.scenes)
+    return {"success": True, "recorded": saved}
 
 
 @app.get("/api/display-config")

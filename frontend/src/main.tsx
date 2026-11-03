@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type TouchEvent as ReactTouchEvent } from 'react';
 import { createRoot } from 'react-dom/client';
-import { makeEndedFeedback, readMediaMetrics, synchronizeMedia } from './media-controller';
+import { makeEndedFeedback, readMediaMetrics, requestMediaPlay, synchronizeMedia } from './media-controller';
+import { MEDIA_DIAGNOSTICS_BUILD, observeMediaDiagnostics, sendMediaDiagnostic, type DiagnosticContext } from './media-diagnostics';
 import './exhibit.css';
 
 type Point = { id: string; order: number; title: string; navLabel: string; subtitle: string; videoPath: string; posterPath: string; backgroundPath: string; mascotKey?: string; contentType?: 'video' | 'imageText'; videoAvailable?: boolean; imagePath?: string; contentText?: string };
@@ -87,6 +88,11 @@ function App() {
   const mediaEvents = useRef<Array<{ time: string; event: string; position: number }>>([]);
   const [mediaMetrics, setMediaMetrics] = useState<ReturnType<typeof readMediaMetrics> | null>(null);
   const [copyMessage, setCopyMessage] = useState('');
+  const diagnosticContext = useRef<DiagnosticContext | null>(null);
+  diagnosticContext.current = activePoint ? {
+    sessionId: status.mediaSessionId ?? null, revision: status.playbackRevision ?? 0, pointId: activePoint.id,
+    pageMode: embedMode ? 'embedded' : 'standalone', playing: status.playbackState === 'playing',
+  } : null;
   const recordMediaEvent = useCallback((event: string) => {
     mediaEvents.current.push({ time: new Date().toISOString(), event, position: Number((videoRef.current?.currentTime ?? 0).toFixed(2)) });
     if (mediaEvents.current.length > 80) mediaEvents.current.shift();
@@ -94,6 +100,7 @@ function App() {
   const playFailed = useCallback((error: unknown) => {
     if (error instanceof DOMException && error.name === 'AbortError') return;
     recordMediaEvent(`播放未成功：${error instanceof Error ? error.name : '未知错误'}`);
+    if (videoRef.current && diagnosticContext.current) sendMediaDiagnostic(videoRef.current, diagnosticContext.current, 'play_rejected', error);
     setNeedsGesture(true);
   }, [recordMediaEvent]);
 
@@ -150,8 +157,16 @@ function App() {
 
   useEffect(() => {
     const video = videoRef.current;
+    if (!video) return;
+    return observeMediaDiagnostics(video, () => videoRef.current === video ? diagnosticContext.current : null);
+  }, [status.mediaSessionId]);
+
+  useEffect(() => {
+    const video = videoRef.current;
     if (!video || !hasVideo) return;
-    synchronizeMedia(video, { source: activePoint?.videoPath ?? '', state: status.playbackState, revision: status.playbackRevision ?? 0 }, recordMediaEvent, playFailed);
+    synchronizeMedia(video, { source: activePoint?.videoPath ?? '', state: status.playbackState, revision: status.playbackRevision ?? 0 }, recordMediaEvent, (error) => {
+      if (videoRef.current === video) playFailed(error);
+    });
   }, [status.playbackState, status.playbackRevision, status.mediaSessionId, activePoint?.videoPath, hasVideo, recordMediaEvent, playFailed]);
 
   useEffect(() => {
@@ -160,7 +175,16 @@ function App() {
     const events: Record<string, string> = { loadstart: '装载视频', loadedmetadata: '读取视频尺寸', playing: '开始输出画面', pause: '视频暂停', waiting: '等待视频数据', stalled: '读取暂时停滞', seeking: '跳转进度', seeked: '跳转完成', ended: '播放结束', error: '视频错误' };
     const record = (event: Event) => recordMediaEvent(events[event.type] ?? event.type);
     for (const name of Object.keys(events)) video.addEventListener(name, record);
-    return () => { for (const name of Object.keys(events)) video.removeEventListener(name, record); };
+    return () => {
+      for (const name of Object.keys(events)) video.removeEventListener(name, record);
+      // The session key has replaced this element. Cancel its old reads/decoder,
+      // without touching the current element or issuing a backend command.
+      if (videoRef.current !== video) {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      }
+    };
   }, [recordMediaEvent, status.mediaSessionId]);
 
   useEffect(() => {
@@ -261,7 +285,12 @@ function App() {
   const playVideo = () => {
     if (!configuredVideo) return;
     // A touch gesture can unblock browser autoplay without waiting for a fetch.
-    if (hasVideo && videoRef.current) void videoRef.current.play().catch(playFailed);
+    const video = videoRef.current;
+    if ((video?.error || status.mediaError) && video && diagnosticContext.current)
+      sendMediaDiagnostic(video, diagnosticContext.current, 'retry_requested');
+    if (hasVideo && video) requestMediaPlay(video, recordMediaEvent, (error) => {
+      if (videoRef.current === video) playFailed(error);
+    });
     void command('play');
   };
   const emergencyStop = () => {
@@ -291,7 +320,7 @@ function App() {
     }
   };
   const copyDiagnostics = async () => {
-    const report = { collectedAt: new Date().toISOString(), pageMode: embedMode ? '嵌入' : '独立', userAgent: navigator.userAgent, point: activePoint.id, video: activePoint.videoPath, status, media: videoRef.current ? readMediaMetrics(videoRef.current) : null, events: mediaEvents.current };
+    const report = { diagnosticBuild: MEDIA_DIAGNOSTICS_BUILD, collectedAt: new Date().toISOString(), pageMode: embedMode ? '嵌入' : '独立', userAgent: navigator.userAgent, point: activePoint.id, video: activePoint.videoPath, status, media: videoRef.current ? readMediaMetrics(videoRef.current) : null, events: mediaEvents.current };
     try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); setCopyMessage('播放诊断已复制'); }
     catch { setCopyMessage('复制未成功，请拍下本面板的诊断数据'); }
   };
@@ -346,15 +375,21 @@ function App() {
         <div className="video-stage" onTouchStart={beginSwipe} onTouchEnd={finishSwipe} onTouchCancel={() => { swipeStart.current = null; }}>
           {(!videoVisible || mediaError) && <img className="poster" src={activePoint.imagePath || activePoint.backgroundPath} alt="" />}
           {!hasVideo && activePoint.contentText && <p className="content-text">{activePoint.contentText}</p>}
-          <video key={status.mediaSessionId ?? 'initial'} ref={videoRef} className={videoVisible && !mediaError ? 'visible' : ''} src={hasVideo ? activePoint.videoPath : undefined} muted={videoMuted} preload="auto" playsInline controls={false} disablePictureInPicture onPlaying={() => setNeedsGesture(false)} onEnded={(event) => {
-            setNeedsGesture(true);
+          <video key={status.mediaSessionId ?? 'initial'} ref={videoRef} className={videoVisible && !mediaError ? 'visible' : ''} src={hasVideo ? activePoint.videoPath : undefined} muted={videoMuted} preload="auto" playsInline controls={false} disablePictureInPicture onPlaying={(event) => {
+            if (videoRef.current !== event.currentTarget || event.currentTarget.error) return;
+            setMediaError(false);
+            setNeedsGesture(false);
+          }} onEnded={(event) => {
             if (videoRef.current !== event.currentTarget || status.displayPointId !== activePoint.id) return;
+            setNeedsGesture(true);
             const feedback = makeEndedFeedback(event.currentTarget, { source: new URL(activePoint.videoPath, location.href).href, sessionId: status.mediaSessionId ?? '', revision: status.playbackRevision ?? 0, state: status.playbackState });
             if (feedback) void reportPlayback(feedback);
-          }} onLoadedData={() => setMediaError(false)} onError={(event) => {
-            if (!hasVideo) return;
+          }} onLoadedData={(event) => {
+            if (videoRef.current === event.currentTarget && !event.currentTarget.error) setMediaError(false);
+          }} onError={(event) => {
+            if (!hasVideo || videoRef.current !== event.currentTarget || !event.currentTarget.error) return;
             setMediaError(true);
-            if (videoRef.current === event.currentTarget && event.currentTarget.error && status.displayPointId === activePoint.id && status.mediaSessionId && status.playbackState === 'playing') {
+            if (status.displayPointId === activePoint.id && status.mediaSessionId && status.playbackState === 'playing') {
               void reportPlayback({ sessionId: status.mediaSessionId, revision: status.playbackRevision ?? 0, event: 'error' });
             }
           }} />

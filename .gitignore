@@ -9,6 +9,8 @@ release/
 # Local runtime data
 logs/
 tmp/
+tools/playback-diagnostics/reports/
+tools/diagnostic-unlock/unlock-report-*.json
 browser-profile/
 config/admin.json
 config/remote-control.key

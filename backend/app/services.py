@@ -347,6 +347,12 @@ class MediaService:
     async def play(self) -> None:
         if not self.state.video_id:
             return
+        # An explicit Play after a media failure starts a fresh media element.
+        # Do not reactivate the scene: that would also issue a motor command.
+        # Keep the error latched through Pause/Stop until this retry, and give
+        # stale feedback from the failed element a different session identity.
+        if self.state.media_error or self.state.playback_state == "error":
+            self.state.media_session_id = uuid4().hex
         self.state.media_error = None
         self.state.playback_revision += 1
         self.state.playback_state = "playing"

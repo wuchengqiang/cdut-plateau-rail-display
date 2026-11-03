@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
-import { makeEndedFeedback, synchronizeMedia, readMediaMetrics } from './src/media-controller.ts';
+import { makeEndedFeedback, requestMediaPlay, synchronizeMedia, readMediaMetrics } from './src/media-controller.ts';
 
 const events = [];
 const failure = (error) => { throw error; };
 let playCalls = 0;
 let pauseCalls = 0;
 const video = {
-  paused: true, ended: false, currentTime: 24.5,
+  paused: true, ended: false, currentTime: 24.5, error: null,
+  load() { throw new Error('Healthy playback must not reload'); },
   play() { playCalls++; this.paused = false; this.ended = false; return Promise.resolve(); },
   pause() { pauseCalls++; this.paused = true; },
 };
@@ -57,3 +58,31 @@ assert.equal(metrics.bufferedSeconds, 15);
 assert.equal(metrics.droppedFrames, 8);
 assert.equal(metrics.resolution, '2126 × 3840');
 console.log('Passed: media continuity at arrival, pause without seek, explicit replay, frame/buffer metrics');
+
+// Even if paused=false, a native media error needs one reload for an explicit
+// command. Repeated status must not form an automatic retry loop.
+let reloads = 0, retries = 0;
+const broken = { paused: false, ended: false, currentTime: 35, error: {code: 3},
+  load() { reloads++; },
+  play() { retries++; return Promise.resolve(); },
+  pause() { this.paused = true; },
+};
+for (const state of ['error', 'paused', 'stopped', 'loading', 'ended']) {
+  synchronizeMedia(broken, {...command, state, revision: 20}, () => {}, failure);
+}
+assert.equal(reloads, 0);
+assert.equal(retries, 0);
+synchronizeMedia(broken, {...command, state: 'playing', revision: 21}, () => {}, failure);
+synchronizeMedia(broken, {...command, state: 'playing', revision: 21}, () => {}, failure);
+assert.equal(reloads, 1);
+assert.equal(retries, 1);
+synchronizeMedia(broken, {...command, state: 'playing', revision: 22}, () => {}, failure);
+assert.equal(reloads, 2);
+requestMediaPlay(broken, () => {}, failure); // a new deliberate touch can retry
+assert.equal(reloads, 3);
+assert.equal(retries, 3);
+const failures = [];
+requestMediaPlay({...broken, load() {throw new Error('load failed');}}, () => {}, e => failures.push(e.message));
+await Promise.resolve();
+assert.deepEqual(failures, ['load failed']);
+console.log('Passed: explicit failed-media retry, no automatic loop, healthy media never reloaded');

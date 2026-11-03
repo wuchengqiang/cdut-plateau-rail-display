@@ -1,5 +1,21 @@
 export type MediaCommand = { source: string; state: string; revision: number };
-export type MediaTarget = Pick<HTMLVideoElement, 'paused' | 'ended' | 'currentTime' | 'play' | 'pause'>;
+export type MediaTarget = Pick<HTMLVideoElement, 'paused' | 'ended' | 'currentTime' | 'error' | 'play' | 'pause' | 'load'>;
+
+// A failed element can remain paused=false. play() alone cannot reset its error.
+// This helper is used only for an explicit Play or a new media command, never
+// from a timer/error handler. A retry starts at the beginning of the current video.
+export function requestMediaPlay(video: MediaTarget, record: (event: string) => void, failed: (error: unknown) => void): void {
+  try {
+    if (video.error) {
+      record('播放重试：重新装载当前视频');
+      video.load();
+    }
+    record('请求播放');
+    void video.play().catch(failed);
+  } catch (error) { failed(error); }
+}
+
+const errorRetries = new WeakMap<MediaTarget, string>();
 
 export function makeEndedFeedback(video: Pick<HTMLVideoElement, 'ended' | 'duration' | 'currentTime' | 'currentSrc'>, context: { source: string; sessionId: string; revision: number; state: string }) {
   if (!context.sessionId || context.state !== 'playing' || video.currentSrc !== context.source || !video.ended
@@ -10,9 +26,13 @@ export function makeEndedFeedback(video: Pick<HTMLVideoElement, 'ended' | 'durat
 // Only explicit media commands or a source change control the element. Rail updates
 // never seek, pause, reload, or replay it. Retrying play also works after native end.
 export function synchronizeMedia(video: MediaTarget, command: MediaCommand, record: (event: string) => void, failed: (error: unknown) => void): void {
-  if (command.state === 'playing' && (video.paused || video.ended)) {
-    record('请求播放');
-    void video.play().catch(failed);
+  if (command.state === 'playing' && (video.error || video.paused || video.ended)) {
+    if (video.error) {
+      const retryKey = JSON.stringify([command.source, command.revision]);
+      if (errorRetries.get(video) === retryKey) return;
+      errorRetries.set(video, retryKey);
+    }
+    requestMediaPlay(video, record, failed);
   } else if (command.state === 'paused' || command.state === 'loading') {
     if (!video.paused) { record('请求暂停'); video.pause(); }
   } else if (command.state === 'stopped') {

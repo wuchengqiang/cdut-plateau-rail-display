@@ -1,0 +1,33 @@
+import assert from 'node:assert/strict';
+let now=0, tick, timerCleared=false;
+const sent=[];
+globalThis.document={visibilityState:'visible'};
+Object.defineProperty(globalThis,'performance',{value:{now:()=>now},configurable:true});
+globalThis.window={setInterval(fn){tick=fn;return 1},clearInterval(){timerCleared=true},setTimeout(){return 0}};
+globalThis.clearInterval=window.clearInterval;
+globalThis.fetch=async(url,options)=>{sent.push({url,body:JSON.parse(options.body)});return {ok:true}};
+const {observeMediaDiagnostics,sendMediaDiagnostic}=await import('./src/media-diagnostics.ts');
+const flush=()=>new Promise(setImmediate);
+const v=Object.assign(new EventTarget(),{currentTime:0,duration:140,paused:false,ended:false,seeking:false,error:null,
+  readyState:4,networkState:1,muted:false,volume:.5,buffered:{length:1,start:()=>0,end:()=>20},
+  getVideoPlaybackQuality:()=>({totalVideoFrames:100,droppedVideoFrames:2})});
+let context={sessionId:'a'.repeat(32),revision:2,pointId:'p03',pageMode:'embedded',playing:true};
+const dispose=observeMediaDiagnostics(v,()=>context);
+now=5000;tick();assert.equal(sent.length,0,'normal playback is not logged');
+v.currentTime=1;now=6000;tick();
+now=16001;tick();await flush();
+assert.equal(sent[0].body.event,'stalled');
+now=80000;tick();await flush();assert.equal(sent.length,1,'one record per continuous stall');
+v.currentTime=2;now=82000;tick();await flush();assert.equal(sent[1].body.event,'recovered');
+v.paused=true;now=100000;tick();now=120000;tick();assert.equal(sent.length,2,'pause is not a stall');
+v.error={code:3};v.dispatchEvent(new Event('error'));await flush();
+v.dispatchEvent(new Event('error'));await flush();assert.equal(sent.length,3,'native error deduplicated');
+const secret=new Error('https://host/?token=PRIVATE-CONTENT');secret.name='NotSupportedError';
+sendMediaDiagnostic(v,context,'play_rejected',secret);await flush();
+assert.equal(sent[3].body.exceptionName,'NotSupportedError');
+assert(!JSON.stringify(sent).includes('PRIVATE-CONTENT'));
+assert(!JSON.stringify(sent).includes('https://host'));
+assert(sent.every(s=>s.url==='/api/media/diagnostics'));
+assert.equal(v.currentTime,2,'observer never seeks or recovers playback');
+dispose();assert(timerCleared);now=150000;v.dispatchEvent(new Event('error'));await flush();assert.equal(sent.length,4);
+console.log('PASS: passive stall/error/recovery telemetry; pause ignored; bounded sends; no URL/message secrets; cleanup');

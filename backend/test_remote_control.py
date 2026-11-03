@@ -72,7 +72,7 @@ class GatewayTests(unittest.IsolatedAsyncioTestCase):
         for path in ['/', '/docs', '/openapi.json', '/content/videos/p01.mp4', '/api/display-config',
                      '/api/admin/login', '/api/admin/reload', '/api/admin/hardware/ping', '/api/admin/public-controls',
                      '/api/wakefusion/v1/health', '/api/wakefusion/v1/actions/0/execute', '/api/media/events',
-                     '/api/control/scene/p01', '/api/control/points/p01/activate/extra']:
+                     '/api/media/diagnostics', '/api/control/scene/p01', '/api/control/points/p01/activate/extra']:
             self.assertEqual((await self.request(path, 'POST'))[0], 403)
         self.assertEqual((await self.request('/api/control/home'))[0], 405)
         self.assertEqual(self.calls, [])
